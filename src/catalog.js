@@ -72,6 +72,8 @@ export function readCatalog(path) {
           ? value.overrides
           : {},
         discovered: Array.isArray(value.discovered) ? value.discovered.filter(isModel) : [],
+        custom: Array.isArray(value.custom) ? value.custom.filter(isModel) : [],
+        order: Array.isArray(value.order) ? value.order.filter(entry => typeof entry === 'string') : [],
       }
     }
   }
@@ -99,3 +101,4 @@ export function writeCatalog(path, catalog) {
 function isModel(value) {
   return value !== null && typeof value === 'object' && typeof value.id === 'string' && value.id.length > 0
 }
+

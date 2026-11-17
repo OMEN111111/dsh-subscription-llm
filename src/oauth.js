@@ -29,23 +29,34 @@ export function randomState() {
 
 /**
  * Open one URL in the user's default browser.
+ *
+ * Windows goes through `rundll32 url.dll,FileProtocolHandler`, which hands the
+ * URL to the shell without re-parsing it: `cmd /c start` splits an unquoted URL
+ * at its first `&`, which silently dropped every authorize parameter after
+ * `redirect_uri`. The `start` form stays as a fallback, quoted.
  * @param url - absolute URL.
  * @returns whether a platform opener was started; a headless host answers false.
  */
 export function openBrowser(url) {
-  const command = process.platform === 'win32'
-    ? { file: 'cmd', args: ['/c', 'start', '', url] }
+  const candidates = process.platform === 'win32'
+    ? [
+        { file: 'rundll32.exe', args: ['url.dll,FileProtocolHandler', url] },
+        { file: 'cmd.exe', args: ['/c', 'start', '""', `"${url}"`] },
+      ]
     : process.platform === 'darwin'
-      ? { file: 'open', args: [url] }
-      : { file: 'xdg-open', args: [url] }
-  try {
-    const child = spawn(command.file, command.args, { detached: true, stdio: 'ignore', windowsHide: true })
-    child.on('error', () => {})
-    child.unref()
-    return true
-  } catch (_noOpener) {
-    return false
+      ? [{ file: 'open', args: [url] }]
+      : [{ file: 'xdg-open', args: [url] }]
+  for (const command of candidates) {
+    try {
+      const child = spawn(command.file, command.args, { detached: true, stdio: 'ignore', windowsHide: true })
+      child.on('error', () => {})
+      child.unref()
+      return true
+    } catch (_noOpener) {
+      // Try the next opener; a host without one answers false below.
+    }
   }
+  return false
 }
 
 const CALLBACK_PAGE = '<!doctype html><meta charset="utf-8"><title>Signed in</title>'

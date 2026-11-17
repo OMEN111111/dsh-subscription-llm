@@ -453,3 +453,96 @@ test('a probe reports success, auth failure, and quota with reasons', async () =
   service.dispose()
 })
 
+
+test('catalog order, custom models, and reset round-trip', async () => {
+  const host = makeHost()
+  const service = new SubscriptionService(host.ctx, config)
+  const channel = CHANNEL_BY_ID.get('chatgpt')
+  const ids = service.models(channel).map(model => model.id)
+
+  const reversed = await service.updateOrder(channel, [...ids].reverse())
+  assert.deepEqual(reversed.models.map(model => model.id), [...ids].reverse())
+
+  const created = await service.createModel(channel, 'gpt-custom-x', 'Custom X')
+  assert.equal(created.customized, true)
+  assert.ok(created.models.some(model => model.id === 'gpt-custom-x' && model.custom === true))
+  assert.ok(service.models(channel).some(model => model.id === 'gpt-custom-x'))
+  const wire = service.model(channel, 'gpt-custom-x').availableEfforts
+  assert.deepEqual(wire.map(effort => effort.wire), ['low', 'medium', 'high'])
+
+  const dropped = await service.updateModel(channel, 'gpt-custom-x', { visible: false })
+  assert.equal(dropped.models.some(model => model.id === 'gpt-custom-x'), false)
+
+  await service.updateModel(channel, 'gpt-5.5', { visible: false, contextWindow: 300_000 })
+  const reset = await service.resetCatalog(channel)
+  assert.equal(reset.hiddenCount, 0)
+  assert.equal(reset.customized, false)
+  assert.equal(service.model(channel, 'gpt-5.5').contextWindow, 272_000)
+  assert.deepEqual(service.models(channel).map(model => model.id), ids)
+  service.dispose()
+})
+
+test('fetching lists candidates and adopting the picked ones restores them', async () => {
+  const host = makeHost()
+  const service = new SubscriptionService(host.ctx, config)
+  const channel = CHANNEL_BY_ID.get('chatgpt')
+  await service.updateModel(channel, 'gpt-5.5', { visible: false })
+  assert.equal(service.channelCatalog(channel).hiddenCount, 1)
+
+  const view = await service.discover(channel)
+  assert.equal(view.hiddenCount, 1)
+  assert.ok(view.candidates.some(candidate => candidate.id === 'gpt-5.5'))
+
+  const adopted = await service.adoptModels(channel, ['gpt-5.5'])
+  assert.equal(adopted.hiddenCount, 0)
+  assert.ok(adopted.models.some(model => model.id === 'gpt-5.5'))
+  service.dispose()
+})
+
+test('claude reasoning levels expose a thinking budget as their wire value', async () => {
+  const host = makeHost()
+  const service = new SubscriptionService(host.ctx, config)
+  const channel = CHANNEL_BY_ID.get('claude')
+  const entry = service.model(channel, 'claude-sonnet-5-5')
+  const low = entry.availableEfforts.find(effort => effort.id === 'low')
+  assert.equal(low.wire, 'budget 1024 tokens')
+  service.dispose()
+})
+
+test('gpt-6.1-sol declares its five reasoning levels with wire values', async () => {
+  const host = makeHost()
+  const service = new SubscriptionService(host.ctx, config)
+  const channel = CHANNEL_BY_ID.get('chatgpt')
+  const entry = service.model(channel, 'gpt-6.1-sol')
+  assert.deepEqual(entry.availableEfforts.map(effort => effort.id), ['low', 'medium', 'high', 'xhigh', 'ultra'])
+  assert.deepEqual(entry.reasoning.efforts.map(effort => effort.id), ['low', 'medium', 'high', 'xhigh', 'ultra'])
+  assert.equal(service.effortWire(channel, 'gpt-6.1-sol', 'xhigh'), 'xhigh')
+  assert.equal(service.effortWire(channel, 'gpt-6.1-sol', 'ultra'), 'ultra')
+  service.dispose()
+})
+
+test('a custom level keeps its edited wire value', async () => {
+  const host = makeHost()
+  const service = new SubscriptionService(host.ctx, config)
+  const channel = CHANNEL_BY_ID.get('claude')
+  await service.updateModel(channel, 'claude-sonnet-5-5', { efforts: [{ id: 'high', wire: 'budget 20000 tokens' }] })
+  const entry = service.model(channel, 'claude-sonnet-5-5')
+  assert.deepEqual(entry.efforts, [{ id: 'high', name: 'High', wire: 'budget 20000 tokens' }])
+  assert.equal(service.effortWire(channel, 'claude-sonnet-5-5', 'high'), 'budget 20000 tokens')
+  service.dispose()
+})
+
+test('removing a model hides it from the editor list and adoption brings it back', async () => {
+  const host = makeHost()
+  const service = new SubscriptionService(host.ctx, config)
+  const channel = CHANNEL_BY_ID.get('chatgpt')
+  await service.updateModel(channel, 'gpt-5.5', { visible: false })
+  assert.equal(service.channelCatalog(channel).models.some(model => model.id === 'gpt-5.5'), false)
+  assert.equal(service.channelCatalog(channel).hiddenCount, 1)
+
+  const adopted = await service.adoptModels(channel, ['gpt-5.5', 'gpt-not-listed'])
+  assert.equal(adopted.models.some(model => model.id === 'gpt-5.5'), true)
+  assert.equal(adopted.models.some(model => model.id === 'gpt-not-listed' && model.custom === true), true)
+  service.dispose()
+})
+

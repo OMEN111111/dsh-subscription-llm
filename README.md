@@ -61,13 +61,15 @@ dsh plugin --profile <你的 profile 名> add github:OMEN111111/dsh-subscription
 
 ### 模型目录与检测
 
-登录后点渠道行上的 **模型目录**：
+登录后点渠道卡片上的 **编辑** 打开 **模型目录**（与 DSH 自带「自定义模型 API」面板同构）：
 
-- 行内勾选框用于批量检测，底部 **检测选中（n）** 依次发起最小真实请求，每行显示结果：`可用 · 320ms`，或 `不可用：原因`（悬停可看上游原文）。
-- 右侧 **删除** 会把模型移出选择器；被删除的行变暗并显示 **恢复**。
-- 头部 **获取可用模型** 向账号询问当前可用模型并并入目录（Antigravity 走 `fetchAvailableModels`，ChatGPT / Claude 使用插件内置目录）；**全部恢复** 一次恢复所有已删除模型。
-- 展开 **模型选项** 可改：上下文窗口（支持 `131072` / `256K` / `1M`）、最大输出 token 数、输入类型（文本 / 图片，至少保留一项）、推理等级（该模型支持的档位与默认档）。
-- 目录与改动保存在 `<DSH_HOME>/subscription-channels/catalog.json`，重启后仍在；删除只是「不在选择器里显示」，已有会话仍可继续。
+- 每行：拖动排序、模型 ID、显示名称、展开、删除。删除会立即把该行从编辑器里移除，同时不再出现在模型选择器。
+- **获取可用模型** 弹出可用模型列表（默认勾选当前被移除的模型），确认后把勾选项加回目录；**恢复默认模型** 清掉全部改动。
+- 展开一行的 **模型选项**：上下文窗口、最大输出 token 数（均支持 `131072` / `256K` / `1M`）、输入类型（文本 / 图片）、推理等级。
+- 推理等级按模型实际支持列出（例如 `gpt-6.1-sol` 为 轻度 / 中 / 高 / 极高 / Ultra），每行都是「档位 + API 参数值」两列，**API 参数值可直接编辑**，也可以增删档位。
+- `+ 添加模型` 可以手动加入账号目录里没有的模型 ID。
+- **检测**：行内 `检测` 或头部 `检测全部` 发起一次最小真实请求，显示 `可用 · 320ms` 或 `不可用 · 原因`（授权失效、额度用尽、限流、模型不存在、上游异常、超时、网络错误）。
+- 目录与改动保存在 `<DSH_HOME>/subscription-channels/catalog.json`；删除只影响选择器，已有会话仍可继续。
 
 ## 支持的渠道
 
@@ -105,6 +107,11 @@ Google Antigravity 的登录使用 Antigravity 客户端自己的 OAuth 客户�
 setx DSH_ANTIGRAVITY_CLIENT_SECRET "<the antigravity client secret>"
 ```
 
+```js
+// 方式零（仅本机）：仓库已 gitignore 的 src/antigravity-secret.local.js
+export const CLIENT_SECRET = '<the antigravity client secret>'
+```
+
 ```yaml
 # 方式二：插件配置
 - id: subscription-channels
@@ -123,7 +130,7 @@ setx DSH_ANTIGRAVITY_CLIENT_SECRET "<the antigravity client secret>"
 
 ## 测试
 
-仓库带有 26 项单元/集成测试，覆盖三条线路的流解析与请求体构造、图片序列化、令牌轮换、路由同步、超时结算、目录覆盖与可见性、检测结果分类：
+仓库带有 32 项单元/集成测试，覆盖三条线路的流解析与请求体构造、图片序列化、令牌轮换、路由同步、超时结算、目录覆盖与可见性、检测结果分类：
 
 ```bash
 npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
@@ -140,7 +147,8 @@ npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
 
 ## 版本
 
-- **v0.2.0**：新增模型目录（删除 / 恢复 / 获取可用模型）、逐模型检测与失败原因、逐模型自定义（上下文窗口、最大输出、推理等级、输入类型），并支持图片输入。
+- **v0.2.1**：渠道目录收进「编辑」；获取可用模型 改为弹窗选择；删除即时生效；推理档位按模型真实支持并支持自定义 API 参数值；修复 Windows 打开登录页时 URL 被 & 截断导致 missing_required_parameter / 缺少 client_id；去掉与退出登录重复的「重新登录」。
+- **v0.2.0**：新增模型目录（删除 / 恢复 / 排序 / 添加模型 / 获取可用模型）、逐模型检测与失败原因、逐模型自定义（上下文窗口、最大输出、推理等级、输入类型），并支持图片输入；界面与 DSH 自带模型编辑面板一致。
 - **v0.1.0**：首个版本。三个渠道的登录、模型注册、退出登录、错误处理与中英文文案。
 
 ## 许可证
@@ -150,6 +158,8 @@ npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
 ---
 
 **English**: A DeepSeek Harness plugin that adds a *subscription channels* entry to Settings → Models, letting you sign in to existing ChatGPT, Google Antigravity, or Claude subscriptions (OAuth + PKCE, credentials in the local DSH store) and use their models directly. Unofficial upstream endpoints; text and tool calls only; MIT licensed.
+
+
 
 
 

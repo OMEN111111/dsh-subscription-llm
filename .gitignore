@@ -1,5 +1,8 @@
 # Local-only material: isolated test home, logs, screenshots, scratch scripts.
 .agent/
 
+# Machine-local Antigravity OAuth client secret (see README); never published.
+src/antigravity-secret.local.js
+
 node_modules/
 *.log

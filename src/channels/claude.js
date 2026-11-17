@@ -32,17 +32,31 @@ const MODELS = [
   { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', contextWindow: 200_000, maxTokens: 64_000 },
 ]
 
+const THINKING_BUDGET = { low: 1024, medium: 4096, high: 16000 }
+
+/**
+ * Read a thinking budget from a level or an edited wire value such as
+ * udget 8192 tokens.
+ * @param wire - configured wire value.
+ * @returns the budget in tokens, or undefined when none applies.
+ */
+function budgetFromWire(wire) {
+  if (typeof wire !== 'string') return undefined
+  const digits = /(\d+)/u.exec(wire)
+  if (digits !== null) return Number(digits[1])
+  return THINKING_BUDGET[wire]
+}
+
+/** Levels Claude accepts, each carrying the thinking budget it sends. */
 const REASONING = {
   efforts: [
-    { id: 'off', name: 'Off' },
-    { id: 'low', name: 'Low' },
-    { id: 'medium', name: 'Medium' },
-    { id: 'high', name: 'High' },
+    { id: 'off', name: 'Off', wire: 'off' },
+    { id: 'low', name: 'Low', wire: `budget ${THINKING_BUDGET.low} tokens` },
+    { id: 'medium', name: 'Medium', wire: `budget ${THINKING_BUDGET.medium} tokens` },
+    { id: 'high', name: 'High', wire: `budget ${THINKING_BUDGET.high} tokens` },
   ],
   defaultEffort: 'medium',
 }
-
-const THINKING_BUDGET = { low: 1024, medium: 4096, high: 16000 }
 
 export default {
   id: 'claude',
@@ -139,6 +153,15 @@ export default {
    * @param model - model id.
    * @returns catalog metadata.
    */
+  /** Reasoning levels any model on this channel may declare. */
+  reasoningEfforts: REASONING.efforts,
+
+  /** The wire value one reasoning level sends; Claude takes a thinking budget. */
+  wireValue(level) {
+    const budget = THINKING_BUDGET[level]
+    return budget === undefined ? 'off' : `budget ${budget} tokens`
+  },
+
   modelInfo(model) {
     const entry = MODELS.find(candidate => candidate.id === model)
     if (entry === undefined) return undefined
@@ -153,8 +176,8 @@ export default {
    */
   buildRequest(options, credential, context) {
     const entry = MODELS.find(candidate => candidate.id === options.model)
-    const effort = options.reasoningEffort
-    const budget = effort === undefined || effort === 'off' ? undefined : THINKING_BUDGET[effort]
+    const effort = context.wireEffort ?? options.reasoningEffort
+    const budget = effort === undefined || effort === 'off' ? undefined : budgetFromWire(effort)
     const requestedMax = options.maxTokens ?? entry?.maxTokens ?? 32_000
     const maxTokens = budget === undefined ? requestedMax : Math.max(requestedMax, budget + 4096)
     const system = [{ type: 'text', text: IDENTITY }]
@@ -366,6 +389,10 @@ function stopReason(value) {
       return { kind: 'stop' }
   }
 }
+
+
+
+
 
 
 

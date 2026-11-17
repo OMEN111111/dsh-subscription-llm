@@ -64,21 +64,62 @@ export class SubscriptionService {
   }
 
   /**
+   * The stored catalog entry of one channel, created on demand.
+   * @param channelId - channel identity.
+   * @returns the mutable channel entry.
+   */
+  channelState(channelId) {
+    this.catalog.channels[channelId] ??= {}
+    const entry = this.catalog.channels[channelId]
+    entry.deleted ??= []
+    entry.overrides ??= {}
+    entry.discovered ??= []
+    entry.custom ??= []
+    entry.order ??= []
+    return entry
+  }
+
+  /**
    * Every model of one channel with the stored overrides applied, hidden ones
    * included: the catalog panel edits the same list the composer reads.
    * @param channel - channel module.
    * @returns merged entries carrying `visible`.
    */
   catalogModels(channel) {
-    const stored = this.catalog.channels[channel.id] ?? { deleted: [], overrides: {}, discovered: [] }
-    const base = Array.isArray(stored.discovered) && stored.discovered.length > 0 ? stored.discovered : channel.models
+    const stored = this.channelState(channel.id)
+    const discovered = Array.isArray(stored.discovered) && stored.discovered.length > 0 ? stored.discovered : channel.models
+    const known = new Set(discovered.map(model => model.id))
+    const base = [...discovered, ...stored.custom.filter(model => !known.has(model.id))]
+    const order = new Map(stored.order.map((id, index) => [id, index]))
+    const ordered = [...base].sort((left, right) => {
+      const leftIndex = order.get(left.id) ?? Number.MAX_SAFE_INTEGER
+      const rightIndex = order.get(right.id) ?? Number.MAX_SAFE_INTEGER
+      return leftIndex - rightIndex
+    })
     const hidden = new Set(stored.deleted)
-    return base.map((model) => {
+    return ordered.map((model) => {
       const override = stored.overrides[model.id] !== null && typeof stored.overrides[model.id] === 'object' ? stored.overrides[model.id] : {}
-      const template = channel.modelInfo?.(model.id) ?? model
-      const available = template?.reasoning?.efforts ?? []
+      const info = channel.modelInfo?.(model.id)
+      const template = info ?? model
+      const available = (info?.reasoning?.efforts ?? channel.reasoningEfforts ?? []).map(effort => ({
+        id: effort.id,
+        name: effort.name ?? effort.id,
+        wire: typeof effort.wire === 'string' ? effort.wire : (channel.wireValue?.(effort.id) ?? effort.id),
+      }))
       const chosen = Array.isArray(override.efforts)
-        ? available.filter(effort => override.efforts.includes(effort.id))
+        ? override.efforts
+          .map(entry => typeof entry === 'string'
+            ? available.find(candidate => candidate.id === entry)
+            : (() => {
+              const id = String(entry?.id ?? '')
+              const known = available.find(candidate => candidate.id === id)
+              return {
+                id,
+                name: String(entry?.name ?? known?.name ?? id),
+                wire: String(entry?.wire ?? ''),
+              }
+            })())
+          .filter(entry => entry !== undefined && entry.id.length > 0)
         : available
       const defaultEffort = typeof override.defaultEffort === 'string' && chosen.some(effort => effort.id === override.defaultEffort)
         ? override.defaultEffort
@@ -91,9 +132,13 @@ export class SubscriptionService {
         name: typeof override.name === 'string' && override.name.trim().length > 0 ? override.name.trim() : (model.name ?? model.id),
         contextWindow: positiveInt(override.contextWindow) ?? template?.contextWindow,
         maxTokens: positiveInt(override.maxTokens) ?? template?.maxTokens,
-        reasoning: chosen.length === 0 ? undefined : { efforts: chosen, ...defaultEffort === undefined ? {} : { defaultEffort } },
+        reasoning: chosen.length === 0
+          ? undefined
+          : { efforts: chosen.map(effort => ({ id: effort.id, name: effort.name })), ...defaultEffort === undefined ? {} : { defaultEffort } },
+        efforts: chosen,
         inputModalities: input,
         availableEfforts: available,
+        custom: stored.custom.some(entry => entry.id === model.id),
         visible: !hidden.has(model.id),
         overrides: override,
       }
@@ -121,6 +166,52 @@ export class SubscriptionService {
   }
 
   /**
+   * The wire value one selected reasoning level sends for a model.
+   * @param channel - channel module.
+   * @param model - model id.
+   * @param level - effort id the request selected.
+   * @returns the configured wire value, or undefined when the level is unknown.
+   */
+  effortWire(channel, model, level) {
+    if (typeof level !== 'string' || level.length === 0) return undefined
+    const entry = this.model(channel, model)
+    const effort = entry?.efforts?.find(candidate => candidate.id === level)
+    return typeof effort?.wire === 'string' && effort.wire.length > 0 ? effort.wire : undefined
+  }
+
+  /**
+   * Add the models a user picked from a discovery result: hidden ones come
+   * back, unknown ones become custom catalog entries.
+   * @param channel - channel module.
+   * @param ids - model ids to adopt.
+   * @returns the updated catalog view with how many were created.
+   */
+  async adoptModels(channel, ids) {
+    const stored = this.channelState(channel.id)
+    const known = new Set(this.catalogModels(channel).map(entry => entry.id))
+    const candidates = new Map(
+      (Array.isArray(stored.discovered) && stored.discovered.length > 0 ? stored.discovered : channel.models)
+        .map(model => [model.id, model]),
+    )
+    let added = 0
+    for (const raw of Array.isArray(ids) ? ids : []) {
+      const id = String(raw ?? '').trim()
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/u.test(id)) continue
+      if (known.has(id)) {
+        stored.deleted = stored.deleted.filter(entry => entry !== id)
+        continue
+      }
+      stored.custom.push({ id, name: candidates.get(id)?.name ?? id })
+      stored.deleted = stored.deleted.filter(entry => entry !== id)
+      known.add(id)
+      added += 1
+    }
+    await this.persistCatalog()
+    this.announce(channel)
+    return { ...this.channelCatalog(channel), adopted: added }
+  }
+
+  /**
    * Re-announce one route so the browser refreshes its model list after a
    * catalog edit or discovery. `replace` re-emits `llm/adapters-updated`.
    * @param channel - channel module.
@@ -145,22 +236,28 @@ export class SubscriptionService {
   }
 
   /**
-   * The catalog one channel shows in its panel.
+   * The catalog one channel shows in its panel: only the models the composer
+   * currently offers, because a removed row must disappear from the editor too.
    * @param channel - channel module.
-   * @returns channel view with every model.
+   * @returns the visible catalog view.
    */
   channelCatalog(channel) {
-    const stored = this.catalog.channels[channel.id] ?? { deleted: [], overrides: {}, discovered: [] }
-    const models = this.catalogModels(channel)
+    const stored = this.channelState(channel.id)
+    const all = this.catalogModels(channel)
+    const models = all.filter(entry => entry.visible)
     return {
       channel: channel.id,
       route: channel.route,
       name: this.label(channel),
       models,
-      visibleCount: models.filter(entry => entry.visible).length,
-      hiddenCount: models.filter(entry => !entry.visible).length,
+      visibleCount: models.length,
+      hiddenCount: all.length - models.length,
       discoveredAt: typeof stored.discoveredAt === 'number' ? stored.discoveredAt : undefined,
       discovered: Array.isArray(stored.discovered) && stored.discovered.length > 0,
+      customized: Object.keys(stored.overrides).length > 0
+        || stored.deleted.length > 0
+        || stored.custom.length > 0
+        || stored.order.length > 0,
     }
   }
 
@@ -175,10 +272,18 @@ export class SubscriptionService {
     if (this.catalogModels(channel).every(entry => entry.id !== modelId)) {
       throw new Error(`unknown model "${String(modelId)}" for ${channel.id}`)
     }
-    this.catalog.channels[channel.id] ??= { deleted: [], overrides: {}, discovered: [] }
-    const stored = this.catalog.channels[channel.id]
+    this.catalog.channels[channel.id] ??= { deleted: [], overrides: {}, discovered: [], custom: [], order: [] }
+    const stored = this.channelState(channel.id)
+    const isCustom = stored.custom.some(entry => entry.id === modelId)
     if (patch.visible === true) stored.deleted = stored.deleted.filter(id => id !== modelId)
-    if (patch.visible === false && !stored.deleted.includes(modelId)) stored.deleted.push(modelId)
+    if (patch.visible === false) {
+      if (isCustom) {
+        stored.custom = stored.custom.filter(entry => entry.id !== modelId)
+        stored.deleted = stored.deleted.filter(id => id !== modelId)
+      } else if (!stored.deleted.includes(modelId)) {
+        stored.deleted.push(modelId)
+      }
+    }
     const next = { ...(stored.overrides[modelId] ?? {}) }
     if ('name' in patch) {
       const name = typeof patch.name === 'string' ? patch.name.trim().slice(0, 120) : ''
@@ -196,10 +301,25 @@ export class SubscriptionService {
       else next.maxTokens = value
     }
     if ('efforts' in patch) {
-      const allowed = (channel.modelInfo?.(modelId)?.reasoning?.efforts ?? []).map(effort => effort.id)
-      const list = Array.isArray(patch.efforts) ? patch.efforts.filter(id => allowed.includes(id)) : undefined
-      if (list === undefined || list.length === allowed.length) delete next.efforts
-      else next.efforts = list
+      const defaults = (channel.modelInfo?.(modelId)?.reasoning?.efforts ?? channel.reasoningEfforts ?? [])
+        .map(effort => ({ id: effort.id, wire: typeof effort.wire === 'string' ? effort.wire : (channel.wireValue?.(effort.id) ?? effort.id) }))
+      const list = Array.isArray(patch.efforts)
+        ? patch.efforts
+          .map(entry => typeof entry === 'string'
+            ? { id: entry, wire: channel.wireValue?.(entry) ?? entry }
+            : { id: String(entry?.id ?? '').trim(), wire: String(entry?.wire ?? '').trim() })
+          .filter(entry => /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/u.test(entry.id) && entry.wire.length <= 120)
+        : []
+      const seen = new Set()
+      const unique = list.filter((entry) => {
+        if (seen.has(entry.id)) return false
+        seen.add(entry.id)
+        return true
+      })
+      const unchanged = unique.length === defaults.length
+        && unique.every((entry, index) => entry.id === defaults[index].id && entry.wire === defaults[index].wire)
+      if (unchanged) delete next.efforts
+      else next.efforts = unique
     }
     if ('defaultEffort' in patch) {
       if (typeof patch.defaultEffort === 'string' && patch.defaultEffort.length > 0) next.defaultEffort = patch.defaultEffort
@@ -233,8 +353,7 @@ export class SubscriptionService {
       }
     }
     if (!Array.isArray(models) || models.length === 0) models = channel.models
-    this.catalog.channels[channel.id] ??= { deleted: [], overrides: {}, discovered: [] }
-    const stored = this.catalog.channels[channel.id]
+    const stored = this.channelState(channel.id)
     stored.discovered = models.map(model => ({
       id: String(model.id),
       name: typeof model.name === 'string' ? model.name : String(model.id),
@@ -244,10 +363,70 @@ export class SubscriptionService {
       ...typeof model.family === 'string' ? { family: model.family } : {},
     }))
     stored.discoveredAt = Date.now()
+    // Discovery only refreshes the snapshot: a removed model comes back when the
+    // user adopts it from the result list, not as a side effect of fetching.
     if (options.restore === true) stored.deleted = []
     await this.persistCatalog()
     this.announce(channel)
-    return { ...this.channelCatalog(channel), discoveredModels: models.length }
+    return {
+      ...this.channelCatalog(channel),
+      discoveredModels: models.length,
+      candidates: stored.discovered.map(model => ({ id: model.id, name: model.name ?? model.id })),
+    }
+  }
+
+  /**
+   * Persist the user's model order.
+   * @param channel - channel module.
+   * @param ids - model ids in display order.
+   * @returns the updated catalog view.
+   */
+  async updateOrder(channel, ids) {
+    const stored = this.channelState(channel.id)
+    const known = new Set(this.catalogModels(channel).map(entry => entry.id))
+    stored.order = (Array.isArray(ids) ? ids : []).filter(id => known.has(id))
+    await this.persistCatalog()
+    this.announce(channel)
+    return this.channelCatalog(channel)
+  }
+
+  /**
+   * Add a model the channel's own catalog does not describe.
+   * @param channel - channel module.
+   * @param id - upstream model id to send.
+   * @param name - display name; the id is used when omitted.
+   * @returns the updated catalog view.
+   */
+  async createModel(channel, id, name) {
+    const modelId = String(id ?? '').trim()
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/u.test(modelId)) {
+      throw new Error('a model id may contain letters, digits, dots, dashes, colons, and underscores')
+    }
+    if (this.catalogModels(channel).some(entry => entry.id === modelId)) {
+      throw new Error(`model "${modelId}" is already in the catalog`)
+    }
+    const stored = this.channelState(channel.id)
+    stored.custom.push({
+      id: modelId,
+      name: typeof name === 'string' && name.trim().length > 0 ? name.trim().slice(0, 120) : modelId,
+    })
+    stored.deleted = stored.deleted.filter(entry => entry !== modelId)
+    await this.persistCatalog()
+    this.announce(channel)
+    return this.channelCatalog(channel)
+  }
+
+  /**
+   * Drop every stored edit for one channel: order, overrides, custom models, and
+   * hidden models all return to the channel's own catalog.
+   * @param channel - channel module.
+   * @returns the reset catalog view.
+   */
+  async resetCatalog(channel) {
+    this.catalog.channels[channel.id] = { deleted: [], overrides: {}, discovered: [], custom: [], order: [] }
+    await this.persistCatalog()
+    this.announce(channel)
+    return this.channelCatalog(channel)
   }
 
   /**
@@ -400,7 +579,7 @@ export class SubscriptionService {
       if (link === undefined) return
       const models = await channel.discoverModels(link, this.config)
       if (!Array.isArray(models) || models.length === 0) return
-      const stored = this.catalog.channels[channel.id] ?? { deleted: [], overrides: {}, discovered: [] }
+      const stored = this.catalog.channels[channel.id] ?? { deleted: [], overrides: {}, discovered: [], custom: [], order: [] }
       stored.discovered = models.map(model => ({
         id: String(model.id),
         name: typeof model.name === 'string' ? model.name : String(model.id),
@@ -693,6 +872,12 @@ export class SubscriptionService {
     this.routes.clear()
   }
 }
+
+
+
+
+
+
 
 
 

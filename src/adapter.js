@@ -132,7 +132,11 @@ export class SubscriptionAdapter {
     }
     let response
     try {
-      const request = channel.buildRequest(options, credential, { ...this.service.requestContext(channel), images })
+      const request = channel.buildRequest(options, credential, {
+        ...this.service.requestContext(channel),
+        images,
+        wireEffort: this.service.effortWire(channel, options.model, options.reasoningEffort),
+      })
       response = await fetch(request.url, {
         method: 'POST',
         headers: request.headers,
@@ -183,5 +187,6 @@ export class SubscriptionAdapter {
     }
   }
 }
+
 
 

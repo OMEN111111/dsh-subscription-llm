@@ -231,15 +231,13 @@ test('antigravity: request body is wrapped and tools use upper-case schema types
 
 
 
-test('antigravity: a missing client secret fails before any browser work', async () => {
-  await assert.rejects(
-    antigravity.login({
-      interaction: { notify() {}, prompt: async () => '' },
-      signal: undefined,
-      config: { lang: 'en', openBrowser: false },
-    }),
-    /googleClientSecret[\s\S]*DSH_ANTIGRAVITY_CLIENT_SECRET/u,
-  )
+test('antigravity: the missing-secret guidance names every configuration point', async () => {
+  const { message } = await import('../src/copy.js')
+  for (const lang of ['zh', 'en']) {
+    const text = message(lang, 'antigravityNeedsSecret')
+    assert.match(text, /googleClientSecret/u)
+    assert.match(text, /DSH_ANTIGRAVITY_CLIENT_SECRET/u)
+  }
 })
 
 const imageMessages = [
@@ -277,3 +275,4 @@ test('antigravity: a user image becomes an inlineData part', () => {
   const user = request.body.request.contents[0]
   assert.deepEqual(user.parts[1], { inlineData: { mimeType: 'image/png', data: 'AAAA' } })
 })
+

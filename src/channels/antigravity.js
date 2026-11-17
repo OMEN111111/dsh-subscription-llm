@@ -15,30 +15,43 @@ import { blockText, conversation, instructionText, declaredTools, geminiSchema, 
 const CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com'
 /**
  * Google's OAuth client secret for the Antigravity client is deliberately not
- * shipped here: it is an installed-application secret that belongs to that
- * client, and repository secret scanning refuses to publish it. Supply it
- * through `config.googleClientSecret` or `DSH_ANTIGRAVITY_CLIENT_SECRET`; the
- * project README says where the public implementations keep the same value.
+ * shipped in this repository: it is an installed-application secret that
+ * belongs to that client, and repository secret scanning refuses to publish it.
+ *
+ * Resolution order:
+ * 1. `config.googleClientSecret`
+ * 2. `DSH_ANTIGRAVITY_CLIENT_SECRET`
+ * 3. `./antigravity-secret.local.js`, a gitignored file for this machine
  * @param config - plugin config.
- * @returns the client secret, or undefined when none was configured.
+ * @returns the client secret, or undefined when none is configured.
  */
-function clientSecretOf(config) {
+let localSecret
+async function clientSecretOf(config) {
   const configured = typeof config.googleClientSecret === 'string' && config.googleClientSecret.length > 0
     ? config.googleClientSecret
     : undefined
   if (configured !== undefined) return configured
   const fromEnv = process.env.DSH_ANTIGRAVITY_CLIENT_SECRET
-  return typeof fromEnv === 'string' && fromEnv.length > 0 ? fromEnv : undefined
+  if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv
+  if (localSecret === undefined) {
+    try {
+      const module = await import('../antigravity-secret.local.js')
+      localSecret = typeof module.CLIENT_SECRET === 'string' && module.CLIENT_SECRET.length > 0 ? module.CLIENT_SECRET : null
+    } catch (_noLocalSecret) {
+      localSecret = null
+    }
+  }
+  return localSecret ?? undefined
 }
 
 /**
  * Fail before the browser round-trip when the secret is missing.
  * @param config - plugin config.
  * @returns the configured client secret.
- * @throws Error naming both configuration points.
+ * @throws Error naming every configuration point.
  */
-function requireClientSecret(config) {
-  const secret = clientSecretOf(config)
+async function requireClientSecret(config) {
+  const secret = await clientSecretOf(config)
   if (secret === undefined) throw new Error(message(config.lang, 'antigravityNeedsSecret'))
   return secret
 }
@@ -78,9 +91,9 @@ const MODELS = [
 
 const REASONING = {
   efforts: [
-    { id: 'low', name: 'Low' },
-    { id: 'medium', name: 'Medium' },
-    { id: 'high', name: 'High' },
+    { id: 'low', name: 'Low', wire: 'low' },
+    { id: 'medium', name: 'Medium', wire: 'medium' },
+    { id: 'high', name: 'High', wire: 'high' },
   ],
   defaultEffort: 'high',
 }
@@ -101,7 +114,7 @@ export default {
     const pkce = createPkce()
     const state = randomState()
     const clientId = config.googleClientId ?? CLIENT_ID
-    const clientSecret = requireClientSecret(config)
+    const clientSecret = await requireClientSecret(config)
     const host = config.antigravityHost ?? HOST
     const authorize = new URL(AUTHORIZE_URL)
     authorize.search = new URLSearchParams({
@@ -169,7 +182,7 @@ export default {
     }
     const token = await postForm(TOKEN_URL, {
       client_id: payload.clientId ?? config.googleClientId ?? CLIENT_ID,
-      client_secret: requireClientSecret(config),
+      client_secret: await requireClientSecret(config),
       refresh_token: payload.refreshToken,
       grant_type: 'refresh_token',
     })
@@ -189,6 +202,14 @@ export default {
    * @param model - model id.
    * @returns catalog metadata.
    */
+  /** Reasoning levels any model on this channel may declare. */
+  reasoningEfforts: REASONING.efforts,
+
+  /** The wire value one reasoning level sends; Antigravity takes a level name. */
+  wireValue(level) {
+    return REASONING.efforts.find(effort => effort.id === level)?.wire ?? level
+  },
+
   modelInfo(model) {
     const entry = MODELS.find(candidate => candidate.id === model)
     if (entry === undefined) {
@@ -235,7 +256,7 @@ export default {
   buildRequest(options, credential, context) {
     const host = credential.host ?? context.config.antigravityHost ?? HOST
     const entry = MODELS.find(candidate => candidate.id === options.model)
-    const effort = options.reasoningEffort ?? entry?.effort ?? 'high'
+    const effort = context.wireEffort ?? options.reasoningEffort ?? entry?.effort ?? 'high'
     const request = {
       contents: contents(options, context.images),
       ...(instructionText(options).length === 0 ? {} : { systemInstruction: { role: 'user', parts: [{ text: instructionText(options) }] } }),
@@ -589,6 +610,10 @@ function mapUsage(usage) {
     ...(thoughts > 0 ? { reasoningTokens: thoughts } : {}),
   }
 }
+
+
+
+
 
 
 

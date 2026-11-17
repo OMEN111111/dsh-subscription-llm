@@ -81,8 +81,31 @@ export function registerRoutes(ctx, service) {
     const input = await body(request)
     const channel = CHANNEL_BY_ID.get(String(input.channel ?? ''))
     if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
-    const view = await service.updateModel(channel, String(input.model ?? ''), input.patch ?? {})
-    return json(view)
+    if (input.create === true) {
+      return json(await service.createModel(channel, input.model, input.name))
+    }
+    return json(await service.updateModel(channel, String(input.model ?? ''), input.patch ?? {}))
+  })
+
+  register('/catalog/order', ['POST'], async (request) => {
+    const input = await body(request)
+    const channel = CHANNEL_BY_ID.get(String(input.channel ?? ''))
+    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
+    return json(await service.updateOrder(channel, input.order))
+  })
+
+  register('/catalog/reset', ['POST'], async (request) => {
+    const input = await body(request)
+    const channel = CHANNEL_BY_ID.get(String(input.channel ?? ''))
+    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
+    return json(await service.resetCatalog(channel))
+  })
+
+  register('/catalog/adopt', ['POST'], async (request) => {
+    const input = await body(request)
+    const channel = CHANNEL_BY_ID.get(String(input.channel ?? ''))
+    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
+    return json(await service.adoptModels(channel, input.models))
   })
 
   register('/catalog/discover', ['POST'], async (request) => {
@@ -106,5 +129,6 @@ export function registerRoutes(ctx, service) {
     return json({ ok: true })
   })
 }
+
 
 

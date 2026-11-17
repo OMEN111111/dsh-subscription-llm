@@ -29,13 +29,28 @@ const MODELS = [
   { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Codex Spark', contextWindow: 128_000, maxTokens: 128_000, efforts: ['low', 'medium', 'high'] },
 ]
 
-/** Reasoning levels as the composer offers them. */
+/** Every reasoning level the ChatGPT backend family accepts, with its wire value. */
+const LEVELS = {
+  low: { id: 'low', name: 'Low', wire: 'low' },
+  medium: { id: 'medium', name: 'Medium', wire: 'medium' },
+  high: { id: 'high', name: 'High', wire: 'high' },
+  xhigh: { id: 'xhigh', name: 'Extra high', wire: 'xhigh' },
+  ultra: { id: 'ultra', name: 'Ultra', wire: 'ultra' },
+}
+
+/** Levels each model declares; more capable models expose more of them. */
+const MODEL_LEVELS = {
+  'gpt-6.1-sol': ['low', 'medium', 'high', 'xhigh', 'ultra'],
+  'gpt-6-sol': ['low', 'medium', 'high', 'xhigh'],
+  'gpt-6-astra': ['low', 'medium', 'high', 'xhigh'],
+  'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh'],
+  'gpt-5.5': ['low', 'medium', 'high'],
+  'gpt-5.3-codex-spark': ['low', 'medium', 'high'],
+}
+
+/** The channel-wide fallback for models that declare nothing. */
 const REASONING = {
-  efforts: [
-    { id: 'low', name: 'Low' },
-    { id: 'medium', name: 'Medium' },
-    { id: 'high', name: 'High' },
-  ],
+  efforts: [LEVELS.low, LEVELS.medium, LEVELS.high],
   defaultEffort: 'medium',
 }
 
@@ -145,10 +160,27 @@ export default {
    * @param model - model id.
    * @returns catalog metadata.
    */
+  /** Reasoning levels any model on this channel may declare. */
+  reasoningEfforts: REASONING.efforts,
+
+  /** The wire value one reasoning level sends; the level id is the effort. */
+  wireValue(level) {
+    return LEVELS[level]?.wire ?? level
+  },
+
   modelInfo(model) {
     const entry = MODELS.find(candidate => candidate.id === model)
     if (entry === undefined) return undefined
-    return { ...entry, reasoning: REASONING }
+    const ids = MODEL_LEVELS[model]
+    return {
+      ...entry,
+      reasoning: ids === undefined
+        ? REASONING
+        : {
+          efforts: ids.map(id => LEVELS[id]),
+          defaultEffort: ids.includes('medium') ? 'medium' : ids[0],
+        },
+    }
   },
 
   /**
@@ -173,7 +205,7 @@ export default {
       headers['session-id'] = clamped
       headers['x-client-request-id'] = clamped
     }
-    const effort = options.reasoningEffort
+    const effort = context.wireEffort ?? options.reasoningEffort
     const body = {
       model: options.model,
       store: false,
@@ -424,6 +456,9 @@ function mapUsage(usage) {
       : {}),
   }
 }
+
+
+
 
 
 
