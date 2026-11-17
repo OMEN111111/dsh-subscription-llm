@@ -1,0 +1,357 @@
+// Service + adapter integration tests against an in-memory Host.
+import test from 'node:test'
+import assert from 'node:assert/strict'
+
+import { SubscriptionService } from '../src/service.js'
+import { normalizeConfig } from '../src/config.js'
+import { recordKey } from '../src/store.js'
+import { CHANNEL_BY_ID } from '../src/channels/index.js'
+
+/** A minimal Cordis-shaped Host: credential store, LLM registry, authorization seam. */
+function makeHost({ withAuthorization = true } = {}) {
+  const records = new Map()
+  const adapters = new Map()
+  const flows = new Map()
+  const credentials = {
+    async readRecord(key) { return records.get(key) },
+    async modifyRecord(key, mutate) {
+      const next = await mutate(records.get(key))
+      if (next === undefined) records.delete(key)
+      else records.set(key, next)
+      return next
+    },
+    async deleteRecord(key) { records.delete(key) },
+  }
+  const llm = {
+    registerAdapter(providers, adapter) {
+      for (const provider of providers) {
+        if (adapters.has(provider)) throw new Error('DUPLICATE_ADAPTER')
+      }
+      for (const provider of providers) adapters.set(provider, adapter)
+      const handle = () => { for (const provider of providers) adapters.delete(provider) }
+      handle.replace = () => {}
+      return handle
+    },
+    listProviders() { return [...adapters.keys()].map(id => ({ id, name: id })) },
+    async listModels(provider) { return adapters.get(provider).listModels(provider) },
+    async resolveModelInfo(provider, model) { return adapters.get(provider).resolveModel(provider, model) },
+  }
+  const authorization = withAuthorization
+    ? {
+        registerFlow(flow) {
+          flows.set(flow.key, flow)
+          return () => flows.delete(flow.key)
+        },
+        async begin({ key, method, interaction }) {
+          const flow = flows.get(key)
+          if (flow === undefined) throw new Error(`NO_FLOW ${key}`)
+          return flow.run({
+            method,
+            signal: new AbortController().signal,
+            commit: async record => { records.set(key, record) },
+            notify: notice => interaction.notify(notice),
+            prompt: prompt => interaction.prompt(prompt),
+          }).then(() => ({ status: 'authorized' }))
+        },
+      }
+    : undefined
+  const services = new Map([['credentials', credentials], ['llm', llm]])
+  if (authorization !== undefined) services.set('authorization', authorization)
+  const warnings = []
+  const ctx = {
+    get: name => services.get(name),
+    effect: (callback) => {
+      const disposer = callback()
+      return () => { if (typeof disposer === 'function') disposer() }
+    },
+    logger: { warn: message => warnings.push(String(message)), info: () => {} },
+  }
+  return { ctx, records, adapters, flows, warnings }
+}
+
+const config = normalizeConfig({})
+
+async function waitFor(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const value = predicate()
+    if (value !== undefined && value !== false) return value
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  throw new Error('timed out waiting for condition')
+}
+
+/** A channel that signs in without touching a browser. */
+function fakeChannel() {
+  return {
+    id: 'chatgpt',
+    route: 'chatgpt-sub',
+    name: { zh: 'ChatGPT 订阅', en: 'ChatGPT subscription' },
+    models: [{ id: 'gpt-test', name: 'GPT Test', contextWindow: 1000, maxTokens: 100 }],
+    modelInfo: model => (model === 'gpt-test'
+      ? {
+          id: 'gpt-test',
+          name: 'GPT Test',
+          contextWindow: 1000,
+          maxTokens: 100,
+          reasoning: { efforts: [{ id: 'low', name: 'Low' }], defaultEffort: 'low' },
+        }
+      : undefined),
+    async login({ interaction }) {
+      interaction.notify({ message: 'Open the sign-in page.', url: 'https://example.test/authorize' })
+      const code = await interaction.prompt({ kind: 'text', message: 'Paste the callback URL.', placeholder: 'url' })
+      if (code !== 'abc') throw new Error('unexpected answer')
+      return {
+        accessToken: 'tok',
+        refreshToken: 'ref',
+        expiresAt: Date.now() + 3_600_000,
+        accountId: 'acct-123',
+        account: 'me@example.test',
+      }
+    },
+  }
+}
+
+test('state lists three channels, none linked on a clean profile', async () => {
+  const host = makeHost()
+  const service = new SubscriptionService(host.ctx, config)
+  service.start()
+  const state = await service.state()
+  assert.deepEqual(state.channels.map(channel => channel.id), ['chatgpt', 'claude', 'antigravity'])
+  assert.equal(state.channels.every(channel => channel.linked === false), true)
+  assert.equal(host.adapters.size, 0)
+  assert.equal(host.flows.size, 3)
+  service.dispose()
+})
+
+test('a completed sign-in stores the grant and publishes the route', async () => {
+  const host = makeHost({ withAuthorization: false })
+  const service = new SubscriptionService(host.ctx, config)
+  const channel = fakeChannel()
+  const attempt = {
+    id: 'attempt-1',
+    channelId: channel.id,
+    status: 'pending',
+    notices: [],
+    prompt: undefined,
+    cancelled: false,
+    controller: new AbortController(),
+    createdAt: Date.now(),
+  }
+  service.attempts.set(attempt.id, attempt)
+  service.active.set(channel.id, attempt)
+  const running = service.runAttempt(attempt, channel)
+
+  const view = await waitFor(() => (service.attempt('attempt-1').prompt === undefined ? undefined : service.attempt('attempt-1')))
+  assert.equal(view.status, 'pending')
+  assert.ok(view.notices.some(notice => notice.url === 'https://example.test/authorize'))
+  assert.equal(view.prompt.message, 'Paste the callback URL.')
+
+  assert.equal(service.answer('attempt-1', 'abc'), true)
+  await running
+
+  assert.equal(service.attempt('attempt-1').status, 'authorized')
+  const stored = host.records.get(recordKey('chatgpt'))
+  assert.equal(stored.kind, 'grant')
+  assert.equal(stored.payload.accountId, 'acct-123')
+  assert.equal(stored.payload.version, 1)
+  assert.ok(host.adapters.has('chatgpt-sub'))
+
+  // The route serves the real ChatGPT catalog; the fake channel only replaced the sign-in.
+  const models = await host.ctx.get('llm').listModels('chatgpt-sub')
+  assert.ok(models.length > 0)
+  const resolved = await host.ctx.get('llm').resolveModelInfo('chatgpt-sub', models[0].id)
+  assert.ok(resolved.context.contextWindow > 0)
+  assert.ok(resolved.reasoning.efforts.length > 0)
+
+  const state = await service.state()
+  assert.equal(state.channels.find(entry => entry.id === 'chatgpt').linked, true)
+  assert.equal(state.channels.find(entry => entry.id === 'chatgpt').account, 'me@example.test')
+  service.dispose()
+})
+
+test('a failing channel marks the attempt failed and stores nothing', async () => {
+  const host = makeHost({ withAuthorization: false })
+  const service = new SubscriptionService(host.ctx, config)
+  const channel = { ...fakeChannel(), async login() { throw new Error('provider said no') } }
+  const attempt = {
+    id: 'attempt-2',
+    channelId: 'chatgpt',
+    status: 'pending',
+    notices: [],
+    prompt: undefined,
+    cancelled: false,
+    controller: new AbortController(),
+    createdAt: Date.now(),
+  }
+  service.attempts.set(attempt.id, attempt)
+  await service.runAttempt(attempt, channel)
+  assert.equal(service.attempt('attempt-2').status, 'failed')
+  assert.equal(service.attempt('attempt-2').error, 'provider said no')
+  assert.equal(host.records.size, 0)
+  service.dispose()
+})
+
+test('logging out withdraws the route and the stored grant', async () => {
+  const host = makeHost()
+  host.records.set(recordKey('claude'), {
+    kind: 'grant',
+    payload: { version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, account: 'me@example.com' },
+  })
+  const service = new SubscriptionService(host.ctx, config)
+  service.start()
+  await waitFor(() => host.adapters.has('claude-sub'))
+
+  const before = await service.state()
+  assert.equal(before.channels.find(channel => channel.id === 'claude').account, 'me@example.com')
+
+  await service.logout('claude')
+  assert.equal(host.records.has(recordKey('claude')), false)
+  assert.equal(host.adapters.has('claude-sub'), false)
+  assert.equal((await service.state()).channels.find(channel => channel.id === 'claude').linked, false)
+  service.dispose()
+})
+
+test('an expiring grant rotates through the channel refresh before use', async () => {
+  const host = makeHost()
+  host.records.set(recordKey('chatgpt'), {
+    kind: 'grant',
+    payload: {
+      version: 1,
+      accessToken: 'stale',
+      refreshToken: 'refresh-token',
+      expiresAt: Date.now() - 1000,
+      accountId: 'acct-1',
+    },
+  })
+  const service = new SubscriptionService(host.ctx, config)
+  service.start()
+  await waitFor(() => host.adapters.has('chatgpt-sub'))
+
+  const originalFetch = globalThis.fetch
+  const seen = []
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), body: String(init?.body ?? '') })
+    return new Response(JSON.stringify({ access_token: 'fresh', refresh_token: 'refresh-2', expires_in: 3600 }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    const credential = await service.credential(CHANNEL_BY_ID.get('chatgpt'), undefined)
+    assert.equal(credential.accessToken, 'fresh')
+    assert.equal(seen[0].url, 'https://auth.openai.com/oauth/token')
+    assert.match(seen[0].body, /grant_type=refresh_token/u)
+    const stored = host.records.get(recordKey('chatgpt')).payload
+    assert.equal(stored.accessToken, 'fresh')
+    assert.equal(stored.accountId, 'acct-1')
+  } finally {
+    globalThis.fetch = originalFetch
+    service.dispose()
+  }
+})
+
+test('the adapter streams a mocked provider response and classifies failures', async () => {
+  const host = makeHost()
+  host.records.set(recordKey('chatgpt'), {
+    kind: 'grant',
+    payload: { version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
+  })
+  const service = new SubscriptionService(host.ctx, config)
+  service.start()
+  await waitFor(() => host.adapters.has('chatgpt-sub'))
+  const adapter = host.adapters.get('chatgpt-sub')
+
+  const originalFetch = globalThis.fetch
+  const sse = 'data: {"type":"response.output_text.delta","item_id":"m","delta":"hi"}\n\n'
+    + 'data: {"type":"response.output_item.done","item":{"id":"m","type":"message"}}\n\n'
+    + 'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}}\n\n'
+  globalThis.fetch = async () => new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  try {
+    const chunks = []
+    for await (const chunk of adapter.stream({ provider: 'chatgpt-sub', model: 'gpt-5.5', messages: [] })) chunks.push(chunk)
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: { kind: 'stop' } })
+    assert.ok(chunks.some(chunk => chunk.type === 'text-delta' && chunk.text === 'hi'))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: 'invalid api key' } }), { status: 401 })
+  try {
+    const chunks = []
+    for await (const chunk of adapter.stream({ provider: 'chatgpt-sub', model: 'gpt-5.5', messages: [] })) chunks.push(chunk)
+    assert.deepEqual(chunks.at(-1), {
+      type: 'finish',
+      reason: { kind: 'error', failure: { message: 'invalid api key', code: 'INVALID_CREDENTIAL', status: 401 } },
+    })
+    // The rejected grant is forgotten, so the channel reads as signed out.
+    await waitFor(() => host.adapters.has('chatgpt-sub') === false)
+    assert.equal(host.records.has(recordKey('chatgpt')), false)
+  } finally {
+    globalThis.fetch = originalFetch
+    service.dispose()
+  }
+})
+
+test('a route with no stored grant reports a sign-in failure instead of calling the provider', async () => {
+  const host = makeHost()
+  const service = new SubscriptionService(host.ctx, config)
+  service.start()
+  host.adapters.set('claude-sub', service.adapter)
+  const chunks = []
+  for await (const chunk of service.adapter.stream({ provider: 'claude-sub', model: 'claude-sonnet-5-5', messages: [] })) chunks.push(chunk)
+  assert.equal(chunks.length, 1)
+  assert.equal(chunks[0].reason.kind, 'error')
+  assert.equal(chunks[0].reason.failure.code, 'INVALID_CREDENTIAL')
+  service.dispose()
+})
+
+
+test('state derives expiry from the stored grant', async () => {
+  const host = makeHost()
+  host.records.set(recordKey('chatgpt'), {
+    kind: 'grant',
+    payload: { version: 1, accessToken: 'a', refreshToken: '', expiresAt: Date.now() - 1000 },
+  })
+  host.records.set(recordKey('claude'), {
+    kind: 'grant',
+    payload: { version: 1, accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() - 1000 },
+  })
+  const service = new SubscriptionService(host.ctx, config)
+  service.start()
+  const state = await service.state()
+  assert.equal(state.channels.find(channel => channel.id === 'chatgpt').status, 'expired')
+  assert.equal(state.channels.find(channel => channel.id === 'claude').status, 'expiring')
+  assert.equal(state.channels.find(channel => channel.id === 'antigravity').status, undefined)
+  service.dispose()
+})
+
+test('a silent channel settles as a timeout, not as a cancel', async () => {
+  const host = makeHost({ withAuthorization: false })
+  const service = new SubscriptionService(host.ctx, { ...config, loginTimeoutMs: 60 })
+  const channel = {
+    ...fakeChannel(),
+    async login({ interaction }) {
+      interaction.notify({ message: 'waiting' })
+      await interaction.prompt({ kind: 'text', message: 'paste' })
+      return {}
+    },
+  }
+  const attempt = {
+    id: 'attempt-timeout',
+    channelId: 'chatgpt',
+    status: 'pending',
+    notices: [],
+    prompt: undefined,
+    cancelled: false,
+    controller: new AbortController(),
+    createdAt: Date.now(),
+  }
+  service.attempts.set(attempt.id, attempt)
+  await service.runAttempt(attempt, channel)
+  assert.equal(service.attempt('attempt-timeout').status, 'failed')
+  assert.match(service.attempt('attempt-timeout').error, /超时/u)
+  service.dispose()
+})
+
+
