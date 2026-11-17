@@ -179,7 +179,7 @@ export default {
       store: false,
       stream: true,
       instructions: instructionText(options) || 'You are a helpful assistant.',
-      input: responsesInput(options),
+      input: responsesInput(options, context.images),
       text: { verbosity: 'low' },
       include: ['reasoning.encrypted_content'],
       tool_choice: 'auto',
@@ -347,8 +347,9 @@ export default {
  * @param options - harness request.
  * @returns the item list.
  */
-function responsesInput(options) {
+function responsesInput(options, images) {
   const input = []
+  const attachments = images instanceof Map ? images : new Map()
   for (const message of conversation(options)) {
     if (message.role === 'developer') {
       const text = blockText(message.content)
@@ -356,8 +357,16 @@ function responsesInput(options) {
       continue
     }
     if (message.role === 'user') {
+      const content = []
       const text = blockText(message.content)
-      if (text.length > 0) input.push({ role: 'user', content: [{ type: 'input_text', text }] })
+      if (text.length > 0) content.push({ type: 'input_text', text })
+      for (const block of message.content) {
+        if (block === null || typeof block !== 'object' || block.type !== 'image') continue
+        const image = attachments.get(block.attachment?.attachmentId)
+        if (image === undefined) continue
+        content.push({ type: 'input_image', detail: 'auto', image_url: `data:${image.mediaType};base64,${image.data}` })
+      }
+      if (content.length > 0) input.push({ role: 'user', content })
       continue
     }
     if (message.role === 'tool') {
@@ -415,5 +424,6 @@ function mapUsage(usage) {
       : {}),
   }
 }
+
 
 

@@ -6,6 +6,8 @@
  * does: an exact route answers only the owner principal.
  */
 
+import { CHANNEL_BY_ID } from './channels/index.js'
+
 /** Route prefix owned by this plugin. */
 const BASE = '/api/dsh-subscription-channels'
 
@@ -69,9 +71,40 @@ export function registerRoutes(ctx, service) {
     return json({ ok: service.cancel(String(id ?? '')) })
   })
 
+  register('/catalog', ['GET'], async (request) => {
+    const channel = CHANNEL_BY_ID.get(String(new URL(request.url).searchParams.get('channel') ?? ''))
+    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
+    return json(service.channelCatalog(channel))
+  })
+
+  register('/catalog/model', ['POST'], async (request) => {
+    const input = await body(request)
+    const channel = CHANNEL_BY_ID.get(String(input.channel ?? ''))
+    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
+    const view = await service.updateModel(channel, String(input.model ?? ''), input.patch ?? {})
+    return json(view)
+  })
+
+  register('/catalog/discover', ['POST'], async (request) => {
+    const input = await body(request)
+    const channel = CHANNEL_BY_ID.get(String(input.channel ?? ''))
+    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
+    const view = await service.discover(channel, { restore: input.restore === true })
+    return json(view)
+  })
+
+  register('/test', ['POST'], async (request) => {
+    const input = await body(request)
+    const channel = CHANNEL_BY_ID.get(String(input.channel ?? ''))
+    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
+    const verdict = await service.testModel(channel, String(input.model ?? ''), request.signal)
+    return json(verdict)
+  })
   register('/logout', ['POST'], async (request) => {
     const { channel } = await body(request)
     await service.logout(channel)
     return json({ ok: true })
   })
 }
+
+

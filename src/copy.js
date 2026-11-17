@@ -14,6 +14,16 @@ const TABLE = {
     noCode: '对方没有返回授权码；请粘贴完整的回调地址。',
     succeeded: '登录成功，账号模型已加入模型选择器。',
     timedOut: '登录超时，请点击重新登录。',
+    testOk: '可用',
+    testAuth: '授权失效或账号无权限',
+    testQuota: '额度或用量已达上限',
+    testRate: '触发上游限流',
+    testMissing: '模型不存在或当前账号不可用',
+    testServer: '上游服务异常',
+    testTimeout: '请求超时',
+    testNetwork: '网络错误',
+    testRejected: '上游拒绝请求',
+    testCancelled: '检测已取消',
     antigravityNeedsSecret: 'Google Antigravity 登录需要 OAuth 客户端密钥：请在插件配置里填 googleClientSecret，或设置环境变量 DSH_ANTIGRAVITY_CLIENT_SECRET。',
     antigravityOnboard: '正在为该账号开通 Antigravity 项目（可能需要几秒钟）…',
     antigravityFallback: 'Cloud Code 项目查询失败（%ERROR%），改用文档中的默认项目。',
@@ -32,6 +42,16 @@ const TABLE = {
     noCode: 'The provider returned no authorization code; paste the full callback URL instead.',
     succeeded: 'Signed in. The account models are now available in the model selector.',
     timedOut: 'The sign-in timed out; start it again from Settings.',
+    testOk: 'Available',
+    testAuth: 'The authorization is invalid or the account lacks access',
+    testQuota: 'Quota or credits exhausted',
+    testRate: 'Rate limited by the provider',
+    testMissing: 'The model does not exist or is not available to this account',
+    testServer: 'The provider failed',
+    testTimeout: 'The request timed out',
+    testNetwork: 'Network error',
+    testRejected: 'The provider rejected the request',
+    testCancelled: 'Probe cancelled',
     antigravityNeedsSecret: 'Antigravity sign-in needs the OAuth client secret: set googleClientSecret in the plugin config, or the DSH_ANTIGRAVITY_CLIENT_SECRET environment variable.',
     antigravityOnboard: 'Provisioning the Antigravity project for this account (this can take a few seconds)…',
     antigravityFallback: 'Cloud Code project lookup failed (%ERROR%); using the documented fallback project.',
@@ -52,5 +72,6 @@ export function message(lang, key, values = {}) {
   if (template === undefined) return key
   return template.replace(/%([A-Z_]+)%/gu, (_match, name) => String(values[name] ?? name))
 }
+
 
 

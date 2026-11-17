@@ -241,3 +241,39 @@ test('antigravity: a missing client secret fails before any browser work', async
     /googleClientSecret[\s\S]*DSH_ANTIGRAVITY_CLIENT_SECRET/u,
   )
 })
+
+const imageMessages = [
+  {
+    role: 'user',
+    content: [
+      { type: 'text', text: 'what is this?' },
+      { type: 'image', attachment: { attachmentId: 'att-1', mediaType: 'image/png', bytes: 4, width: 2, height: 2 } },
+    ],
+  },
+]
+const imageContext = { config, images: new Map([['att-1', { mediaType: 'image/png', data: 'AAAA' }]]) }
+
+test('chatgpt: a user image becomes an input_image data URL', () => {
+  const request = chatgpt.buildRequest({ provider: 'chatgpt-sub', model: 'gpt-5.5', messages: imageMessages }, credential, imageContext)
+  const user = request.body.input[0]
+  assert.deepEqual(user.content[0], { type: 'input_text', text: 'what is this?' })
+  assert.deepEqual(user.content[1], { type: 'input_image', detail: 'auto', image_url: 'data:image/png;base64,AAAA' })
+})
+
+test('chatgpt: without resolved bytes the image block is omitted, text kept', () => {
+  const request = chatgpt.buildRequest({ provider: 'chatgpt-sub', model: 'gpt-5.5', messages: imageMessages }, credential, { config })
+  const user = request.body.input[0]
+  assert.deepEqual(user.content, [{ type: 'input_text', text: 'what is this?' }])
+})
+
+test('claude: a user image becomes a base64 source block', () => {
+  const request = claude.buildRequest({ provider: 'claude-sub', model: 'claude-sonnet-5-5', messages: imageMessages }, credential, imageContext)
+  const user = request.body.messages[0]
+  assert.deepEqual(user.content[1], { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } })
+})
+
+test('antigravity: a user image becomes an inlineData part', () => {
+  const request = antigravity.buildRequest({ provider: 'google-antigravity', model: 'gemini-4-argon-high', messages: imageMessages }, credential, imageContext)
+  const user = request.body.request.contents[0]
+  assert.deepEqual(user.parts[1], { inlineData: { mimeType: 'image/png', data: 'AAAA' } })
+})

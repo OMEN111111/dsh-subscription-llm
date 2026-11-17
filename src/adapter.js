@@ -70,7 +70,7 @@ export class SubscriptionAdapter {
     return { width: image.width, height: image.height, maxBytes: image.bytes }
   }
 
-  /** Advertise the channel catalog for one route. */
+  /** Advertise the channel's visible models for one route. */
   async listModels(provider) {
     const channel = CHANNEL_BY_ROUTE.get(provider)
     if (channel === undefined) return []
@@ -78,16 +78,15 @@ export class SubscriptionAdapter {
       provider,
       id: model.id,
       name: model.name,
-      ...(model.description === undefined ? {} : { description: model.description }),
-      inputModalities: ['text'],
+      inputModalities: model.inputModalities,
     }))
   }
 
-  /** Resolve one channel model's capacity and reasoning levels. */
+  /** Resolve one channel model's capacity, reasoning levels, and input types. */
   async resolveModel(provider, model) {
     const channel = CHANNEL_BY_ROUTE.get(provider)
     const entry = channel === undefined ? undefined : this.service.model(channel, model)
-    const base = { provider, id: model, name: entry?.name ?? model, inputModalities: ['text'] }
+    const base = { provider, id: model, name: entry?.name ?? model, inputModalities: entry?.inputModalities ?? ['text'] }
     if (entry === undefined) return base
     return {
       ...base,
@@ -125,9 +124,15 @@ export class SubscriptionAdapter {
       yield { type: 'finish', reason: { kind: 'error', failure: { message: `${this.service.label(channel)} is not signed in`, code: INVALID_CREDENTIAL } } }
       return
     }
+    let images
+    try {
+      images = await this.service.imagesFor(channel, options, options.signal)
+    } catch (_imagesUnavailable) {
+      images = new Map()
+    }
     let response
     try {
-      const request = channel.buildRequest(options, credential, this.service.requestContext(channel))
+      const request = channel.buildRequest(options, credential, { ...this.service.requestContext(channel), images })
       response = await fetch(request.url, {
         method: 'POST',
         headers: request.headers,
@@ -178,3 +183,5 @@ export class SubscriptionAdapter {
     }
   }
 }
+
+

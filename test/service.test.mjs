@@ -2,10 +2,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { SubscriptionService } from '../src/service.js'
 import { normalizeConfig } from '../src/config.js'
 import { recordKey } from '../src/store.js'
 import { CHANNEL_BY_ID } from '../src/channels/index.js'
+
+// Keep the catalog document inside a throwaway home instead of the real ~/.dsh.
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-subscription-channels-test-'))
 
 /** A minimal Cordis-shaped Host: credential store, LLM registry, authorization seam. */
 function makeHost({ withAuthorization = true } = {}) {
@@ -354,4 +361,95 @@ test('a silent channel settles as a timeout, not as a cancel', async () => {
   service.dispose()
 })
 
+
+
+test('catalog edits hide models, change capacity, and persist', async () => {
+  const host = makeHost()
+  const service = new SubscriptionService(host.ctx, config)
+  const channel = CHANNEL_BY_ID.get('chatgpt')
+  const original = service.models(channel).map(entry => entry.id)
+  assert.ok(original.includes('gpt-5.5'))
+
+  await service.updateModel(channel, 'gpt-5.5', { visible: false, contextWindow: 123_456, efforts: ['low'], input: ['text', 'image'] })
+  assert.equal(service.models(channel).some(entry => entry.id === 'gpt-5.5'), false)
+  const entry = service.model(channel, 'gpt-5.5')
+  assert.equal(entry.visible, false)
+  assert.equal(entry.contextWindow, 123_456)
+  assert.deepEqual(entry.reasoning.efforts.map(effort => effort.id), ['low'])
+  assert.deepEqual(entry.inputModalities, ['text', 'image'])
+
+  const listed = await service.adapter.listModels('chatgpt-sub')
+  assert.equal(listed.some(model => model.id === 'gpt-5.5'), false)
+  const hidden = await service.adapter.resolveModel('chatgpt-sub', 'gpt-5.5')
+  assert.equal(hidden.context.contextWindow, 123_456)
+  assert.deepEqual(hidden.inputModalities, ['text', 'image'])
+
+  const document = JSON.parse(readFileSync(join(process.env.DSH_HOME, 'subscription-channels', 'catalog.json'), 'utf8'))
+  assert.equal(document.channels.chatgpt.overrides['gpt-5.5'].contextWindow, 123_456)
+
+  await service.updateModel(channel, 'gpt-5.5', { visible: true, contextWindow: undefined, efforts: undefined, input: ['text'] })
+  assert.ok(service.models(channel).some(model => model.id === 'gpt-5.5'))
+  assert.deepEqual(service.model(channel, 'gpt-5.5').inputModalities, ['text'])
+  service.dispose()
+})
+
+test('discovery adopts the channel catalog and can restore hidden models', async () => {
+  const host = makeHost()
+  const service = new SubscriptionService(host.ctx, config)
+  const channel = CHANNEL_BY_ID.get('claude')
+  await service.updateModel(channel, 'claude-opus-5-5', { visible: false })
+  await service.updateModel(channel, 'claude-sonnet-5-5', { visible: false })
+  assert.equal(service.channelCatalog(channel).hiddenCount, 2)
+
+  const view = await service.discover(channel, { restore: true })
+  assert.equal(view.hiddenCount, 0)
+  assert.ok(view.visibleCount >= 7)
+  assert.equal(view.discoveredModels >= 7, true)
+  const document = JSON.parse(readFileSync(join(process.env.DSH_HOME, 'subscription-channels', 'catalog.json'), 'utf8'))
+  assert.ok(document.channels.claude.discovered.length >= 7)
+  service.dispose()
+})
+
+test('a probe reports success, auth failure, and quota with reasons', async () => {
+  const host = makeHost()
+  host.records.set(recordKey('chatgpt'), {
+    kind: 'grant',
+    payload: { version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
+  })
+  const service = new SubscriptionService(host.ctx, config)
+  const channel = CHANNEL_BY_ID.get('chatgpt')
+  const originalFetch = globalThis.fetch
+  const sse = 'data: {"type":"response.output_text.delta","item_id":"m","delta":"pong"}\n\n'
+
+  globalThis.fetch = async () => new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  try {
+    const verdict = await service.testModel(channel, 'gpt-5.5', undefined)
+    assert.equal(verdict.ok, true)
+    assert.equal(verdict.status, 200)
+    assert.equal(typeof verdict.latencyMs, 'number')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: 'bad key' } }), { status: 401 })
+  try {
+    const verdict = await service.testModel(channel, 'gpt-5.5', undefined)
+    assert.equal(verdict.ok, false)
+    assert.equal(verdict.code, 'INVALID_CREDENTIAL')
+    assert.match(verdict.reason, /授权/u)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: 'quota exceeded' } }), { status: 429 })
+  try {
+    const verdict = await service.testModel(channel, 'gpt-5.5', undefined)
+    assert.equal(verdict.ok, false)
+    assert.equal(verdict.code, 'QUOTA')
+    assert.match(verdict.reason, /额度/u)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+  service.dispose()
+})
 

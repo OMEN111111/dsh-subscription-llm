@@ -7,9 +7,29 @@ import { CHANNELS, CHANNEL_BY_ID } from './channels/index.js'
 import { SubscriptionAdapter } from './adapter.js'
 import { readLink, writeLink, clearLink, isFresh, recordKey, PAYLOAD_VERSION } from './store.js'
 import { message } from './copy.js'
+import { catalogPath, readCatalog, writeCatalog, emptyCatalog } from './catalog.js'
+import { probeModel } from './probe.js'
 
 /** How long a settled attempt stays readable by the browser. */
 const ATTEMPT_RETENTION_MS = 5 * 60 * 1000
+
+/**
+ * Admit a positive capacity from an edit payload. Numbers pass through; text
+ * accepts the same `131072` / `256K` / `1M` spellings the panel shows.
+ * @param value - candidate.
+ * @returns the integer, or undefined when the value is not one.
+ */
+function positiveInt(value) {
+  let numeric = NaN
+  if (typeof value === 'number') numeric = value
+  else if (typeof value === 'string') {
+    const match = /^(\d+(?:\.\d+)?)\s*([km])?$/iu.exec(value.trim())
+    if (match !== null) numeric = Number(match[1]) * (match[2]?.toLowerCase() === 'm' ? 1_000_000 : match[2]?.toLowerCase() === 'k' ? 1_000 : 1)
+  }
+  const rounded = Math.round(numeric)
+  if (!Number.isSafeInteger(rounded) || rounded <= 0) return undefined
+  return rounded
+}
 
 export class SubscriptionService {
   /**
@@ -25,8 +45,9 @@ export class SubscriptionService {
     this.active = new Map()
     /** channel id -> adapter registration handle */
     this.routes = new Map()
-    /** channel id -> model list discovered from the account */
-    this.discovered = new Map()
+    /** Durable per-channel catalog: visibility, per-model overrides, last discovery. */
+    this.catalogPath = catalogPath(ctx)
+    this.catalog = readCatalog(this.catalogPath)
     /** The injected LLM registry; optional services are read lazily, never as properties. */
     this.llm = ctx.get('llm')
     this.flowsFor = undefined
@@ -43,26 +64,214 @@ export class SubscriptionService {
   }
 
   /**
-   * Models one channel advertises: account discovery when it answered,
-   * otherwise the module's static catalog.
+   * Every model of one channel with the stored overrides applied, hidden ones
+   * included: the catalog panel edits the same list the composer reads.
    * @param channel - channel module.
-   * @returns model entries.
+   * @returns merged entries carrying `visible`.
    */
-  models(channel) {
-    return this.discovered.get(channel.id) ?? channel.models
+  catalogModels(channel) {
+    const stored = this.catalog.channels[channel.id] ?? { deleted: [], overrides: {}, discovered: [] }
+    const base = Array.isArray(stored.discovered) && stored.discovered.length > 0 ? stored.discovered : channel.models
+    const hidden = new Set(stored.deleted)
+    return base.map((model) => {
+      const override = stored.overrides[model.id] !== null && typeof stored.overrides[model.id] === 'object' ? stored.overrides[model.id] : {}
+      const template = channel.modelInfo?.(model.id) ?? model
+      const available = template?.reasoning?.efforts ?? []
+      const chosen = Array.isArray(override.efforts)
+        ? available.filter(effort => override.efforts.includes(effort.id))
+        : available
+      const defaultEffort = typeof override.defaultEffort === 'string' && chosen.some(effort => effort.id === override.defaultEffort)
+        ? override.defaultEffort
+        : chosen.some(effort => effort.id === template?.reasoning?.defaultEffort)
+          ? template.reasoning.defaultEffort
+          : chosen[0]?.id
+      const input = Array.isArray(override.input) && override.input.includes('image') ? ['text', 'image'] : ['text']
+      return {
+        id: model.id,
+        name: typeof override.name === 'string' && override.name.trim().length > 0 ? override.name.trim() : (model.name ?? model.id),
+        contextWindow: positiveInt(override.contextWindow) ?? template?.contextWindow,
+        maxTokens: positiveInt(override.maxTokens) ?? template?.maxTokens,
+        reasoning: chosen.length === 0 ? undefined : { efforts: chosen, ...defaultEffort === undefined ? {} : { defaultEffort } },
+        inputModalities: input,
+        availableEfforts: available,
+        visible: !hidden.has(model.id),
+        overrides: override,
+      }
+    })
   }
 
   /**
-   * One model's metadata, including its reasoning levels.
+   * Models the composer may offer.
+   * @param channel - channel module.
+   * @returns visible merged entries.
+   */
+  models(channel) {
+    return this.catalogModels(channel).filter(entry => entry.visible)
+  }
+
+  /**
+   * One model's effective metadata; hidden models stay resolvable so an open
+   * conversation can finish after the user removes them from the list.
    * @param channel - channel module.
    * @param model - model id.
-   * @returns metadata, or undefined when the model is not advertised.
+   * @returns metadata, or undefined when the channel does not know the model.
    */
   model(channel, model) {
-    const entry = channel.modelInfo?.(model)
-    if (entry !== undefined) return entry
-    const known = this.models(channel).find(candidate => candidate.id === model)
-    return known
+    return this.catalogModels(channel).find(entry => entry.id === model)
+  }
+
+  /**
+   * Re-announce one route so the browser refreshes its model list after a
+   * catalog edit or discovery. `replace` re-emits `llm/adapters-updated`.
+   * @param channel - channel module.
+   */
+  announce(channel) {
+    const handle = this.routes.get(channel.id)
+    if (handle === undefined) return
+    try {
+      handle.replace([channel.route])
+    } catch (_announceFailed) {
+      // A disposed registration simply means the channel is signed out now.
+    }
+  }
+
+  /** Persist the catalog document, keeping the in-memory copy authoritative. */
+  async persistCatalog() {
+    try {
+      writeCatalog(this.catalogPath, this.catalog)
+    } catch (error) {
+      this.ctx.logger.warn('subscription-channels: cannot persist the model catalog: %s', String(error?.message ?? error))
+    }
+  }
+
+  /**
+   * The catalog one channel shows in its panel.
+   * @param channel - channel module.
+   * @returns channel view with every model.
+   */
+  channelCatalog(channel) {
+    const stored = this.catalog.channels[channel.id] ?? { deleted: [], overrides: {}, discovered: [] }
+    const models = this.catalogModels(channel)
+    return {
+      channel: channel.id,
+      route: channel.route,
+      name: this.label(channel),
+      models,
+      visibleCount: models.filter(entry => entry.visible).length,
+      hiddenCount: models.filter(entry => !entry.visible).length,
+      discoveredAt: typeof stored.discoveredAt === 'number' ? stored.discoveredAt : undefined,
+      discovered: Array.isArray(stored.discovered) && stored.discovered.length > 0,
+    }
+  }
+
+  /**
+   * Apply one edit to a model's catalog entry.
+   * @param channel - channel module.
+   * @param modelId - model to edit.
+   * @param patch - visibility, name, capacity, reasoning levels, or input types.
+   * @returns the updated catalog view.
+   */
+  async updateModel(channel, modelId, patch) {
+    if (this.catalogModels(channel).every(entry => entry.id !== modelId)) {
+      throw new Error(`unknown model "${String(modelId)}" for ${channel.id}`)
+    }
+    this.catalog.channels[channel.id] ??= { deleted: [], overrides: {}, discovered: [] }
+    const stored = this.catalog.channels[channel.id]
+    if (patch.visible === true) stored.deleted = stored.deleted.filter(id => id !== modelId)
+    if (patch.visible === false && !stored.deleted.includes(modelId)) stored.deleted.push(modelId)
+    const next = { ...(stored.overrides[modelId] ?? {}) }
+    if ('name' in patch) {
+      const name = typeof patch.name === 'string' ? patch.name.trim().slice(0, 120) : ''
+      if (name.length === 0) delete next.name
+      else next.name = name
+    }
+    if ('contextWindow' in patch) {
+      const value = positiveInt(patch.contextWindow)
+      if (value === undefined) delete next.contextWindow
+      else next.contextWindow = value
+    }
+    if ('maxTokens' in patch) {
+      const value = positiveInt(patch.maxTokens)
+      if (value === undefined) delete next.maxTokens
+      else next.maxTokens = value
+    }
+    if ('efforts' in patch) {
+      const allowed = (channel.modelInfo?.(modelId)?.reasoning?.efforts ?? []).map(effort => effort.id)
+      const list = Array.isArray(patch.efforts) ? patch.efforts.filter(id => allowed.includes(id)) : undefined
+      if (list === undefined || list.length === allowed.length) delete next.efforts
+      else next.efforts = list
+    }
+    if ('defaultEffort' in patch) {
+      if (typeof patch.defaultEffort === 'string' && patch.defaultEffort.length > 0) next.defaultEffort = patch.defaultEffort
+      else delete next.defaultEffort
+    }
+    if ('input' in patch) {
+      const list = Array.isArray(patch.input) ? patch.input.filter(value => value === 'text' || value === 'image') : ['text']
+      if (list.includes('image')) next.input = ['text', 'image']
+      else delete next.input
+    }
+    stored.overrides[modelId] = next
+    await this.persistCatalog()
+    this.announce(channel)
+    return this.channelCatalog(channel)
+  }
+
+  /**
+   * Ask the channel for its available models and adopt them.
+   * @param channel - channel module.
+   * @param options - `restore` also clears every hidden model.
+   * @returns the updated catalog view and how many models answered.
+   */
+  async discover(channel, options = {}) {
+    const credential = await this.credential(channel, undefined)
+    let models = []
+    if (typeof channel.discoverModels === 'function' && credential !== undefined) {
+      try {
+        models = await channel.discoverModels(credential, this.config)
+      } catch (error) {
+        this.ctx.logger.info('subscription-channels: discovery for %s failed: %s', channel.id, String(error?.message ?? error))
+      }
+    }
+    if (!Array.isArray(models) || models.length === 0) models = channel.models
+    this.catalog.channels[channel.id] ??= { deleted: [], overrides: {}, discovered: [] }
+    const stored = this.catalog.channels[channel.id]
+    stored.discovered = models.map(model => ({
+      id: String(model.id),
+      name: typeof model.name === 'string' ? model.name : String(model.id),
+      ...positiveInt(model.contextWindow) === undefined ? {} : { contextWindow: positiveInt(model.contextWindow) },
+      ...positiveInt(model.maxTokens) === undefined ? {} : { maxTokens: positiveInt(model.maxTokens) },
+      ...typeof model.effort === 'string' ? { effort: model.effort } : {},
+      ...typeof model.family === 'string' ? { family: model.family } : {},
+    }))
+    stored.discoveredAt = Date.now()
+    if (options.restore === true) stored.deleted = []
+    await this.persistCatalog()
+    this.announce(channel)
+    return { ...this.channelCatalog(channel), discoveredModels: models.length }
+  }
+
+  /**
+   * Probe one model with a minimal request and report why it failed.
+   * @param channel - channel module.
+   * @param modelId - model to probe.
+   * @param signal - caller cancellation.
+   * @returns the probe verdict.
+   */
+  async testModel(channel, modelId, signal) {
+    const entry = this.model(channel, modelId)
+    if (entry === undefined) {
+      return { ok: false, code: 'UNKNOWN_MODEL', reason: message(this.config.lang, 'testMissing') }
+    }
+    let credential
+    try {
+      credential = await this.credential(channel, signal)
+    } catch (error) {
+      return { ok: false, code: 'INVALID_CREDENTIAL', detail: String(error?.message ?? error), reason: message(this.config.lang, 'testAuth') }
+    }
+    if (credential === undefined) {
+      return { ok: false, code: 'INVALID_CREDENTIAL', reason: message(this.config.lang, 'testAuth') }
+    }
+    return probeModel({ channel, modelId, credential, config: this.config, lang: this.config.lang, signal })
   }
 
   /**
@@ -72,6 +281,44 @@ export class SubscriptionService {
    */
   requestContext(_channel) {
     return { config: this.config }
+  }
+
+  /**
+   * Resolve the images one request carries into base64, but only when the
+   * target model declares image input; the harness strips them otherwise.
+   * @param channel - channel module.
+   * @param options - harness request.
+   * @param signal - request cancellation.
+   * @returns attachment id -> `{ mediaType, data }`, empty when nothing applies.
+   */
+  async imagesFor(channel, options, signal) {
+    const resolved = new Map()
+    const model = this.model(channel, options.model)
+    if (model?.inputModalities?.includes('image') !== true) return resolved
+    const attachments = this.ctx.get('attachments')
+    if (attachments === undefined) return resolved
+    for (const message of options.messages) {
+      const blocks = Array.isArray(message.content) ? message.content : []
+      for (const block of blocks) {
+        if (block === null || typeof block !== 'object' || block.type !== 'image' || block.offloaded === true) continue
+        const ref = block.attachment
+        if (ref === undefined || resolved.has(ref.attachmentId)) continue
+        try {
+          const request = await attachments.readImageRequest(ref, {
+            width: ref.width,
+            height: ref.height,
+            maxBytes: ref.bytes,
+          }, signal)
+          resolved.set(ref.attachmentId, {
+            mediaType: request.mediaType,
+            data: Buffer.from(request.data).toString('base64'),
+          })
+        } catch (_unreadableImage) {
+          // An image that cannot be read is omitted; the text still travels.
+        }
+      }
+    }
+    return resolved
   }
 
   /** Start watching stored grants: register the routes they already unlock. */
@@ -142,7 +389,8 @@ export class SubscriptionService {
   }
 
   /**
-   * Advertise the models the linked account can actually use.
+   * Refresh the stored discovery snapshot for a linked channel. The static
+   * catalog stays authoritative when the account cannot answer.
    * @param channel - channel module.
    */
   async refreshModels(channel) {
@@ -151,9 +399,21 @@ export class SubscriptionService {
       const link = await readLink(this.ctx, channel.id)
       if (link === undefined) return
       const models = await channel.discoverModels(link, this.config)
-      if (Array.isArray(models) && models.length > 0) this.discovered.set(channel.id, models)
+      if (!Array.isArray(models) || models.length === 0) return
+      const stored = this.catalog.channels[channel.id] ?? { deleted: [], overrides: {}, discovered: [] }
+      stored.discovered = models.map(model => ({
+        id: String(model.id),
+        name: typeof model.name === 'string' ? model.name : String(model.id),
+        ...positiveInt(model.contextWindow) === undefined ? {} : { contextWindow: positiveInt(model.contextWindow) },
+        ...positiveInt(model.maxTokens) === undefined ? {} : { maxTokens: positiveInt(model.maxTokens) },
+        ...typeof model.effort === 'string' ? { effort: model.effort } : {},
+        ...typeof model.family === 'string' ? { family: model.family } : {},
+      }))
+      stored.discoveredAt = Date.now()
+      this.catalog.channels[channel.id] = stored
+      await this.persistCatalog()
     } catch (_discoveryFailed) {
-      // The static catalog stays authoritative when discovery cannot answer.
+      // Keep the previous snapshot when discovery cannot answer.
     }
   }
 
@@ -234,6 +494,7 @@ export class SubscriptionService {
             : typeof link.refreshToken === 'string' && link.refreshToken.length > 0 ? 'expiring' : 'expired',
         account: typeof link?.account === 'string' ? link.account : undefined,
         modelCount: this.models(channel).length,
+        hiddenCount: this.catalogModels(channel).length - this.models(channel).length,
         expiresAt: typeof link?.expiresAt === 'number' ? link.expiresAt : undefined,
       })
     }
@@ -417,7 +678,8 @@ export class SubscriptionService {
     if (running !== undefined) this.cancel(running.id)
     await clearLink(this.ctx, channel.id)
     await this.dropRoute(channel)
-    this.discovered.delete(channel.id)
+    delete this.catalog.channels[channel.id]
+    await this.persistCatalog()
   }
 
   /** Stop every running attempt; called when the plugin unloads. */
@@ -431,6 +693,11 @@ export class SubscriptionService {
     this.routes.clear()
   }
 }
+
+
+
+
+
 
 
 

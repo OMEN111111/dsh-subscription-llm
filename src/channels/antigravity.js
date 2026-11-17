@@ -237,7 +237,7 @@ export default {
     const entry = MODELS.find(candidate => candidate.id === options.model)
     const effort = options.reasoningEffort ?? entry?.effort ?? 'high'
     const request = {
-      contents: contents(options),
+      contents: contents(options, context.images),
       ...(instructionText(options).length === 0 ? {} : { systemInstruction: { role: 'user', parts: [{ text: instructionText(options) }] } }),
       generationConfig: {
         maxOutputTokens: options.maxTokens ?? entry?.maxTokens ?? 65_535,
@@ -450,8 +450,9 @@ async function onboard(accessToken, host, tier, interaction, lang) {
  * @param options - harness request.
  * @returns the contents array.
  */
-function contents(options) {
+function contents(options, images) {
   const out = []
+  const attachments = images instanceof Map ? images : new Map()
   for (const message of conversation(options)) {
     if (message.role === 'developer') {
       const text = blockText(message.content)
@@ -459,8 +460,16 @@ function contents(options) {
       continue
     }
     if (message.role === 'user') {
+      const parts = []
       const text = blockText(message.content)
-      if (text.length > 0) out.push({ role: 'user', parts: [{ text }] })
+      if (text.length > 0) parts.push({ text })
+      for (const block of message.content) {
+        if (block === null || typeof block !== 'object' || block.type !== 'image') continue
+        const image = attachments.get(block.attachment?.attachmentId)
+        if (image === undefined) continue
+        parts.push({ inlineData: { mimeType: image.mediaType, data: image.data } })
+      }
+      if (parts.length > 0) out.push({ role: 'user', parts })
       continue
     }
     if (message.role === 'tool') {
@@ -580,6 +589,7 @@ function mapUsage(usage) {
     ...(thoughts > 0 ? { reasoningTokens: thoughts } : {}),
   }
 }
+
 
 
 

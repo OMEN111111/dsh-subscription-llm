@@ -35,7 +35,36 @@ window.__ModuleLoader__.load({
       modelOne: '1 个模型',
       availableAfterLogin: '登录后可用',
       expired: '已过期 · 请重新登录',
-      confirmLogout: '确认退出',
+      catalog: '模型目录',
+      failPrefix: '失败',
+      catalogHint: '这里可见的模型就是对话框下方胶囊体里能选的模型。',
+      catalogMeta: '可见 %VISIBLE% · 已删除 %HIDDEN%',
+      discover: '获取可用模型',
+      discovering: '正在询问账号…',
+      restoreAll: '全部恢复',
+      catalogEmpty: '目录为空，请先点「获取可用模型」。',
+      modelId: '模型 ID',
+      displayName: '显示名称',
+      modelOptions: '模型选项',
+      removeModel: '删除',
+      restoreModel: '恢复',
+      removed: '已删除',
+      contextWindow: '上下文窗口',
+      maxOutput: '最大输出 token 数',
+      inputTypes: '输入类型',
+      inputText: '文本',
+      inputImage: '图片',
+      reasoningLevels: '推理等级',
+      reasoningNone: '该模型不支持推理等级',
+      defaultLevel: '默认等级',
+      testModel: '检测',
+      testSelected: '检测选中（%COUNT%）',
+      testing: '检测中…',
+      testAvailable: '可用',
+      testUnavailable: '不可用',
+      saveFailed: '保存失败：%MESSAGE%',
+      selectAll: '全选',
+      clearSelection: '取消全选',      confirmLogout: '确认退出',
       retry: '重试',
       errInvalidGrant: '授权被拒绝或已失效，请重新登录。',
       errSessionEnded: '登录会话已结束，请重试。',
@@ -69,7 +98,36 @@ window.__ModuleLoader__.load({
       modelOne: '1 model',
       availableAfterLogin: 'Available after sign-in',
       expired: 'Expired · sign in again',
-      confirmLogout: 'Confirm sign-out',
+      catalog: 'Model catalog',
+      failPrefix: 'Failed',
+      catalogHint: 'Visible models are the ones the composer offers.',
+      catalogMeta: '%VISIBLE% visible · %HIDDEN% removed',
+      discover: 'Fetch available models',
+      discovering: 'Asking the account…',
+      restoreAll: 'Restore all',
+      catalogEmpty: 'No models yet. Fetch available models first.',
+      modelId: 'Model ID',
+      displayName: 'Display name',
+      modelOptions: 'Model options',
+      removeModel: 'Remove',
+      restoreModel: 'Restore',
+      removed: 'Removed',
+      contextWindow: 'Context window',
+      maxOutput: 'Max output tokens',
+      inputTypes: 'Input types',
+      inputText: 'Text',
+      inputImage: 'Image',
+      reasoningLevels: 'Reasoning levels',
+      reasoningNone: 'This model has no reasoning levels',
+      defaultLevel: 'Default level',
+      testModel: 'Test',
+      testSelected: 'Test selected (%COUNT%)',
+      testing: 'Testing…',
+      testAvailable: 'Available',
+      testUnavailable: 'Unavailable',
+      saveFailed: 'Save failed: %MESSAGE%',
+      selectAll: 'Select all',
+      clearSelection: 'Clear selection',      confirmLogout: 'Confirm sign-out',
       retry: 'Retry',
       errInvalidGrant: 'The authorization was refused or has expired. Sign in again.',
       errSessionEnded: 'That sign-in session ended. Try again.',
@@ -158,6 +216,7 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false)
       const [error, setError] = React.useState(undefined)
       const [confirming, setConfirming] = React.useState(false)
+      const [catalogOpen, setCatalogOpen] = React.useState(false)
 
       React.useEffect(() => {
         if (attemptId === undefined) return undefined
@@ -299,6 +358,18 @@ window.__ModuleLoader__.load({
                 'button',
                 {
                   type: 'button',
+                  className: 'sc-btn',
+                  'aria-expanded': catalogOpen,
+                  onClick: () => setCatalogOpen(value => !value),
+                },
+                t('catalog'),
+              )
+              : null,
+            !running && channel.linked === true
+              ? h(
+                'button',
+                {
+                  type: 'button',
                   className: 'sc-btn sc-btnQuiet',
                   disabled: busy,
                   onClick: () => {
@@ -370,6 +441,14 @@ window.__ModuleLoader__.load({
               : null,
           )
           : null,
+        channel.linked === true
+          ? h(CatalogPanel, {
+            channel,
+            t,
+            open: catalogOpen,
+            onSaved: () => { void onChanged() },
+          })
+          : null,
         attempt !== undefined && attempt.status === 'authorized'
           ? h('p', { className: 'sc-ok', role: 'status' }, t('succeeded'))
           : null,
@@ -384,6 +463,383 @@ window.__ModuleLoader__.load({
             h('button', { type: 'button', className: 'sc-btn sc-btnTiny', onClick: () => { setAttempt(undefined); void start() } }, t('retry')),
           )
           : null,
+      )
+    }
+
+    /** Parse "256K" / "1M" / "131072" into a token count. */
+    function parseCapacity(text) {
+      const raw = String(text ?? '').trim().toLowerCase()
+      if (raw.length === 0) return undefined
+      const match = /^(\d+(?:\.\d+)?)\s*([km])?$/u.exec(raw)
+      if (match === null) return undefined
+      const value = Math.round(Number(match[1]) * (match[2] === 'm' ? 1_000_000 : match[2] === 'k' ? 1_000 : 1))
+      return Number.isSafeInteger(value) && value > 0 ? value : undefined
+    }
+
+    /** Render a capacity the way the official model editor does. */
+    function formatCapacity(value) {
+      if (typeof value !== 'number' || value <= 0) return ''
+      if (value % 1_000_000 === 0) return `${value / 1_000_000}M`
+      if (value % 1_000 === 0) return `${value / 1_000}K`
+      return String(value)
+    }
+
+    /** One catalog row: visibility, display name, capacity, input types, reasoning, probe. */
+    function CatalogModelRow(props) {
+      const { channel, model, t, selected, onSelect, onPatched, probe, onTest, onSaved } = props
+      const [open, setOpen] = React.useState(false)
+      const [error, setError] = React.useState(undefined)
+      const [busy, setBusy] = React.useState(false)
+      const [contextDraft, setContextDraft] = React.useState(formatCapacity(model.contextWindow))
+      const [maxDraft, setMaxDraft] = React.useState(formatCapacity(model.maxTokens))
+
+      React.useEffect(() => { setContextDraft(formatCapacity(model.contextWindow)) }, [model.contextWindow])
+      React.useEffect(() => { setMaxDraft(formatCapacity(model.maxTokens)) }, [model.maxTokens])
+
+      const patch = async (next) => {
+        setBusy(true)
+        setError(undefined)
+        try {
+          const view = await api('/catalog/model', {
+            method: 'POST',
+            body: JSON.stringify({ channel: channel.id, model: model.id, patch: next }),
+          })
+          onPatched(view)
+          onSaved()
+        } catch (failure) {
+          setError(String(failure.message ?? failure))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const available = Array.isArray(model.availableEfforts) ? model.availableEfforts : []
+      const chosen = new Set((model.reasoning?.efforts ?? []).map(effort => effort.id))
+      const input = Array.isArray(model.inputModalities) ? model.inputModalities : ['text']
+      const hasImage = input.includes('image')
+      const hasText = input.includes('text')
+
+      const toggleEffort = (id) => {
+        const next = new Set(chosen)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        const ordered = available.filter(effort => next.has(effort.id)).map(effort => effort.id)
+        void patch({ efforts: ordered })
+      }
+
+      const toggleInput = (kind) => {
+        const next = new Set(input)
+        if (next.has(kind)) next.delete(kind)
+        else next.add(kind)
+        const ordered = ['text', 'image'].filter(value => next.has(value))
+        void patch({ input: ordered })
+      }
+
+      const probeStatus = probe === 'running'
+        ? h('span', { className: 'sc-probe sc-probeBusy' }, t('testing'))
+        : probe === undefined
+          ? null
+          : h(
+            'span',
+            {
+              className: probe.ok ? 'sc-probe sc-probeOk' : 'sc-probe sc-probeFail',
+              title: probe.detail ?? probe.reason ?? '',
+            },
+            probe.ok
+              ? `${t('testAvailable')}${typeof probe.latencyMs === 'number' ? ` · ${probe.latencyMs}ms` : ''}`
+              : `${t('testUnavailable')}${probe.reason === undefined ? '' : `：${probe.reason}`}`,
+          )
+
+      return h(
+        'li',
+        { className: model.visible ? 'sc-model' : 'sc-model sc-modelOff' },
+        h(
+          'div',
+          { className: 'sc-modelHead' },
+          h('input', {
+            type: 'checkbox',
+            className: 'sc-check',
+            checked: selected,
+            'aria-label': `${t('testModel')} ${model.name}`,
+            onChange: event => onSelect(event.target.checked),
+          }),
+          h('code', { className: 'sc-modelId', title: model.id }, model.id),
+          h('input', {
+            className: 'sc-modelName',
+            defaultValue: model.name,
+            disabled: busy,
+            'aria-label': t('displayName'),
+            onBlur: event => {
+              if (event.target.value !== model.name) void patch({ name: event.target.value })
+            },
+          }),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'sc-iconBtn',
+              'aria-expanded': open,
+              'aria-label': t('modelOptions'),
+              onClick: () => setOpen(value => !value),
+            },
+            h(IconChevron, { open }),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'sc-linkBtn',
+              disabled: busy,
+              onClick: () => { void patch({ visible: !model.visible }) },
+            },
+            model.visible ? t('removeModel') : t('restoreModel'),
+          ),
+        ),
+        open
+          ? h(
+            'div',
+            { className: 'sc-modelOptions' },
+            h(
+              'label',
+              { className: 'sc-field' },
+              h('span', { className: 'sc-fieldLabel' }, t('contextWindow')),
+              h('input', {
+                className: 'sc-input sc-inputNumber',
+                value: contextDraft,
+                placeholder: '1M',
+                inputMode: 'numeric',
+                disabled: busy,
+                onChange: event => setContextDraft(event.target.value),
+                onBlur: () => {
+                  const parsed = parseCapacity(contextDraft)
+                  if (parsed === model.contextWindow) return
+                  void patch({ contextWindow: parsed })
+                },
+              }),
+            ),
+            h(
+              'label',
+              { className: 'sc-field' },
+              h('span', { className: 'sc-fieldLabel' }, t('maxOutput')),
+              h('input', {
+                className: 'sc-input sc-inputNumber',
+                value: maxDraft,
+                placeholder: '128K',
+                inputMode: 'numeric',
+                disabled: busy,
+                onChange: event => setMaxDraft(event.target.value),
+                onBlur: () => {
+                  const parsed = parseCapacity(maxDraft)
+                  if (parsed === model.maxTokens) return
+                  void patch({ maxTokens: parsed })
+                },
+              }),
+            ),
+            h(
+              'fieldset',
+              { className: 'sc-fieldSet' },
+              h('legend', { className: 'sc-fieldLabel' }, t('inputTypes')),
+              h('label', { className: 'sc-choice' },
+                h('input', {
+                  type: 'checkbox',
+                  checked: hasText,
+                  disabled: busy || (hasText && !hasImage),
+                  onChange: () => toggleInput('text'),
+                }),
+                t('inputText')),
+              h('label', { className: 'sc-choice' },
+                h('input', {
+                  type: 'checkbox',
+                  checked: hasImage,
+                  disabled: busy || (hasImage && !hasText),
+                  onChange: () => toggleInput('image'),
+                }),
+                t('inputImage')),
+            ),
+            h(
+              'fieldset',
+              { className: 'sc-fieldSet' },
+              h('legend', { className: 'sc-fieldLabel' }, t('reasoningLevels')),
+              available.length === 0
+                ? h('span', { className: 'sc-note' }, t('reasoningNone'))
+                : available.map(effort => h(
+                  'label',
+                  { className: 'sc-choice', key: effort.id },
+                  h('input', {
+                    type: 'checkbox',
+                    checked: chosen.has(effort.id),
+                    disabled: busy,
+                    onChange: () => toggleEffort(effort.id),
+                  }),
+                  effort.name ?? effort.id,
+                )),
+            ),
+            h(
+              'div',
+              { className: 'sc-modelActions' },
+              h('button', {
+                type: 'button',
+                className: 'sc-btn sc-btnTiny',
+                disabled: busy,
+                onClick: () => onTest(model.id),
+              }, t('testModel')),
+              probeStatus,
+            ),
+            error === undefined
+              ? null
+              : h('p', { className: 'sc-error', role: 'alert' }, `${t('failPrefix')}: ${error}`),
+          )
+          : null,
+      )
+    }
+
+    /** The per-channel model catalog: visibility, edits, discovery, and probes. */
+    function CatalogPanel(props) {
+      const { channel, t, open, onSaved } = props
+      const [status, setStatus] = React.useState('idle')
+      const [view, setView] = React.useState(undefined)
+      const [error, setError] = React.useState(undefined)
+      const [busy, setBusy] = React.useState(false)
+      const [selection, setSelection] = React.useState(() => new Set())
+      const [probes, setProbes] = React.useState({})
+
+      const load = React.useCallback(async () => {
+        setStatus('loading')
+        setError(undefined)
+        try {
+          const next = await api('/catalog?channel=' + encodeURIComponent(channel.id))
+          setView(next)
+          setStatus('ready')
+        } catch (failure) {
+          setError(String(failure.message ?? failure))
+          setStatus('failed')
+        }
+      }, [channel.id])
+
+      React.useEffect(() => {
+        if (open && view === undefined) void load()
+      }, [open, view, load])
+
+      const discover = async (restore) => {
+        setBusy(true)
+        setError(undefined)
+        try {
+          const next = await api('/catalog/discover', {
+            method: 'POST',
+            body: JSON.stringify({ channel: channel.id, restore }),
+          })
+          setView(next)
+          onSaved()
+        } catch (failure) {
+          setError(String(failure.message ?? failure))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const probeOne = async (modelId) => {
+        setProbes(current => ({ ...current, [modelId]: 'running' }))
+        try {
+          const verdict = await api('/test', {
+            method: 'POST',
+            body: JSON.stringify({ channel: channel.id, model: modelId }),
+          })
+          setProbes(current => ({ ...current, [modelId]: verdict }))
+        } catch (failure) {
+          setProbes(current => ({
+            ...current,
+            [modelId]: { ok: false, reason: String(failure.message ?? failure) },
+          }))
+        }
+      }
+
+      const probeSelected = async () => {
+        for (const modelId of selection) await probeOne(modelId)
+      }
+
+      if (!open) return null
+
+      const models = view?.models ?? []
+      const toggle = (modelId, checked) => {
+        setSelection((current) => {
+          const next = new Set(current)
+          if (checked) next.add(modelId)
+          else next.delete(modelId)
+          return next
+        })
+      }
+
+      return h(
+        'div',
+        { className: 'sc-catalog' },
+        h(
+          'div',
+          { className: 'sc-catHead' },
+          h('span', { className: 'sc-catTitle' }, t('catalog')),
+          view === undefined
+            ? null
+            : h('span', { className: 'sc-catMeta' }, t('catalogMeta')
+              .replace('%VISIBLE%', String(view.visibleCount))
+              .replace('%HIDDEN%', String(view.hiddenCount))),
+          h('span', { className: 'sc-catSpacer' }),
+          h('button', {
+            type: 'button',
+            className: 'sc-linkBtn',
+            disabled: busy,
+            onClick: () => { void discover(false) },
+          }, busy ? t('discovering') : t('discover')),
+          view !== undefined && view.hiddenCount > 0
+            ? h('button', {
+              type: 'button',
+              className: 'sc-linkBtn',
+              disabled: busy,
+              onClick: () => { void discover(true) },
+            }, t('restoreAll'))
+            : null,
+        ),
+        h('p', { className: 'sc-catHint' }, t('catalogHint')),
+        error === undefined ? null : h('p', { className: 'sc-error', role: 'alert' }, `${t('failPrefix')}: ${error}`),
+        status === 'loading' ? h('p', { className: 'sc-note' }, t('loading')) : null,
+        status === 'ready' && models.length === 0
+          ? h('p', { className: 'sc-modelEmpty' }, t('catalogEmpty'))
+          : null,
+        models.length === 0
+          ? null
+          : h(
+            'ul',
+            { className: 'sc-modelList' },
+            models.map(model => h(CatalogModelRow, {
+              key: model.id,
+              channel,
+              model,
+              t,
+              selected: selection.has(model.id),
+              onSelect: checked => toggle(model.id, checked),
+              onPatched: next => setView(next),
+              probe: probes[model.id],
+              onTest: modelId => { void probeOne(modelId) },
+              onSaved,
+            })),
+          ),
+        models.length === 0
+          ? null
+          : h(
+            'div',
+            { className: 'sc-modelFooter' },
+            h('button', {
+              type: 'button',
+              className: 'sc-btn sc-btnTiny',
+              disabled: selection.size === 0 || busy,
+              onClick: () => { void probeSelected() },
+            }, t('testSelected').replace('%COUNT%', String(selection.size))),
+            h('button', {
+              type: 'button',
+              className: 'sc-linkBtn',
+              onClick: () => setSelection((current) => current.size === models.length
+                ? new Set()
+                : new Set(models.map(model => model.id))),
+            }, selection.size === models.length ? t('clearSelection') : t('selectAll')),
+          ),
       )
     }
 
@@ -550,6 +1006,67 @@ window.__ModuleLoader__.load({
   border-radius: var(--dsw-radius-sm, 8px);
 }
 .sc-input:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary)); }
+.sc-catalog {
+  display: flex; flex-direction: column; gap: 10px;
+  padding-top: 10px; margin-top: 2px; border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+.sc-catHead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sc-catTitle { font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-secondary); }
+.sc-catMeta { font-size: 12px; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
+.sc-catSpacer { flex: 1 1 auto; }
+.sc-catHint { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
+.sc-modelList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 380px; overflow: auto; }
+.sc-model {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 6px 8px; border-radius: var(--dsw-radius-sm, 8px);
+  border: 0.5px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base);
+}
+.sc-modelOff { opacity: 0.6; }
+.sc-modelHead { display: flex; align-items: center; gap: 8px; }
+.sc-check { width: 14px; height: 14px; margin: 0; accent-color: var(--dsw-alias-brand-primary); flex: 0 0 auto; }
+.sc-modelId {
+  font: 11px/16px ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--dsw-alias-label-secondary);
+  max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 0 auto;
+}
+.sc-modelName {
+  flex: 1 1 auto; min-width: 80px; height: 28px; padding: 0 8px; font: inherit; font-size: 12px;
+  color: var(--dsw-alias-label-primary); background: transparent;
+  border: 0.5px solid transparent; border-radius: var(--dsw-radius-sm, 8px);
+}
+.sc-modelName:hover:not(:disabled) { border-color: var(--dsw-alias-border-l1); }
+.sc-modelName:focus-visible { outline: none; border-color: var(--dsw-alias-border-l2); }
+.sc-iconBtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; cursor: pointer; color: var(--dsw-alias-label-secondary);
+  background: transparent; border: none; border-radius: var(--dsw-radius-sm, 8px);
+}
+.sc-iconBtn:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+.sc-linkBtn {
+  padding: 0; height: auto; cursor: pointer; font: inherit; font-size: 12px;
+  color: var(--dsw-alias-brand-primary); background: none; border: none;
+}
+.sc-linkBtn:disabled { opacity: 0.5; cursor: default; }
+.sc-linkBtn:hover:not(:disabled) { text-decoration: underline; }
+.sc-modelOptions { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px 6px; }
+.sc-field { display: flex; flex-direction: column; gap: 4px; }
+.sc-fieldLabel { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); padding: 0; }
+.sc-inputNumber { height: 32px; max-width: 180px; }
+.sc-fieldSet { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 0; padding: 0; border: none; }
+.sc-fieldSet > legend { float: left; margin-right: 6px; }
+.sc-choice { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-primary); }
+.sc-choice input { width: 14px; height: 14px; margin: 0; accent-color: var(--dsw-alias-brand-primary); }
+.sc-modelActions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sc-probe { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
+.sc-probeBusy { color: var(--dsw-alias-label-secondary); }
+.sc-probeOk { color: var(--dsw-alias-state-success-primary); }
+.sc-probeFail { color: var(--dsw-alias-state-error-primary); }
+.sc-modelEmpty {
+  margin: 0; padding: 12px; text-align: center; font-size: 12px; line-height: 18px;
+  color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
+  border: 1px dashed var(--dsw-alias-border-l3, var(--dsw-alias-border-l2)); border-radius: var(--dsw-radius-lg, 12px);
+}
+.sc-modelFooter { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .sc-foot { margin: 0; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
 `)
     }
@@ -572,6 +1089,9 @@ window.__ModuleLoader__.load({
     }
   },
 })
+
+
+
 
 
 

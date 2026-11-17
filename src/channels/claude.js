@@ -151,7 +151,7 @@ export default {
    * @param credential - stored grant.
    * @returns URL, headers, and JSON body.
    */
-  buildRequest(options, credential) {
+  buildRequest(options, credential, context) {
     const entry = MODELS.find(candidate => candidate.id === options.model)
     const effort = options.reasoningEffort
     const budget = effort === undefined || effort === 'off' ? undefined : THINKING_BUDGET[effort]
@@ -165,7 +165,7 @@ export default {
       stream: true,
       max_tokens: maxTokens,
       system,
-      messages: messages(options),
+      messages: messages(options, context.images),
       ...(options.temperature === undefined || budget !== undefined ? {} : { temperature: options.temperature }),
       ...(budget === undefined ? {} : { thinking: { type: 'enabled', budget_tokens: budget } }),
       ...(options.stop === undefined ? {} : { stop_sequences: options.stop }),
@@ -274,8 +274,9 @@ export default {
  * @param options - harness request.
  * @returns the `messages` array.
  */
-function messages(options) {
+function messages(options, images) {
   const out = []
+  const attachments = images instanceof Map ? images : new Map()
   for (const message of conversation(options)) {
     if (message.role === 'developer') {
       const text = blockText(message.content)
@@ -283,8 +284,16 @@ function messages(options) {
       continue
     }
     if (message.role === 'user') {
+      const content = []
       const text = blockText(message.content)
-      if (text.length > 0) out.push({ role: 'user', content: [{ type: 'text', text }] })
+      if (text.length > 0) content.push({ type: 'text', text })
+      for (const block of message.content) {
+        if (block === null || typeof block !== 'object' || block.type !== 'image') continue
+        const image = attachments.get(block.attachment?.attachmentId)
+        if (image === undefined) continue
+        content.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } })
+      }
+      if (content.length > 0) out.push({ role: 'user', content })
       continue
     }
     if (message.role === 'tool') {
@@ -357,6 +366,7 @@ function stopReason(value) {
       return { kind: 'stop' }
   }
 }
+
 
 
 
