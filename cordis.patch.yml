@@ -1,0 +1,5 @@
+- insert:
+    - id: subscription-channels
+      name: 'dsh-subscription-channels'
+      config: {}
+

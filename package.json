@@ -1,0 +1,56 @@
+{
+  "name": "dsh-subscription-channels",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sign in to existing ChatGPT, Google Antigravity and Claude subscription accounts and use their models in DeepSeek Harness.",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "subscription",
+    "chatgpt",
+    "claude",
+    "antigravity",
+    "oauth"
+  ],
+  "homepage": "https://github.com/OMEN111111/dsh-subscription-llm#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OMEN111111/dsh-subscription-llm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/OMEN111111/dsh-subscription-llm/issues"
+  },
+  "license": "MIT",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "src",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/wire.test.mjs test/service.test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}
+

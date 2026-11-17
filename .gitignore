@@ -1,0 +1,5 @@
+# Local-only material: isolated test home, logs, screenshots, scratch scripts.
+.agent/
+
+node_modules/
+*.log

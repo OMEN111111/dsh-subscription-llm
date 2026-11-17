@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="Subscription channels">
+  <defs>
+    <linearGradient id="sc-bg" x1="8" y1="4" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1d2733"/>
+      <stop offset="1" stop-color="#101720"/>
+    </linearGradient>
+    <linearGradient id="sc-link" x1="14" y1="48" x2="50" y2="16" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#37c0a6"/>
+      <stop offset="1" stop-color="#7ad0ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#sc-bg)"/>
+  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="14.25" fill="none" stroke="#2c3a4a" stroke-width="1.5"/>
+  <path d="M20 22c6-5 16-5 22 0" fill="none" stroke="url(#sc-link)" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M22 42c6 5 16 5 22 0" fill="none" stroke="url(#sc-link)" stroke-width="2.5" stroke-linecap="round" opacity="0.75"/>
+  <circle cx="20" cy="22" r="4.2" fill="#0f1620" stroke="#37c0a6" stroke-width="2.4"/>
+  <circle cx="42" cy="22" r="4.2" fill="#0f1620" stroke="#7ad0ff" stroke-width="2.4"/>
+  <circle cx="33" cy="34" r="7.4" fill="#0f1620" stroke="url(#sc-link)" stroke-width="2.6"/>
+  <circle cx="33" cy="34" r="2.4" fill="#7ad0ff"/>
+  <circle cx="22" cy="42" r="3.4" fill="#0f1620" stroke="#37c0a6" stroke-width="2.1" opacity="0.85"/>
+  <circle cx="44" cy="42" r="3.4" fill="#0f1620" stroke="#7ad0ff" stroke-width="2.1" opacity="0.85"/>
+</svg>
