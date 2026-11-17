@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Subscription channels",
+    "description": "Sign in to existing ChatGPT, Google Antigravity and Claude subscription accounts, then use the models those accounts already include. Adds a third entry card beside Third-party model provider and Custom model API in Settings > Models.",
+    "detail": "docs/DETAIL.md"
+  }
+}

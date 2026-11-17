@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "第三方订阅渠道",
+    "description": "登录已有的 ChatGPT、Google Antigravity、Claude 订阅账号，直接使用这些账号里的模型。在 设置 > 模型 的「第三方模型提供商」和「自定义模型 API」之后新增第三个入口「第三方订阅渠道」。",
+    "detail": "docs/DETAIL.md"
+  }
+}
