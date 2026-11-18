@@ -150,6 +150,7 @@ npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
 
 ## 版本
 
+- **v0.3.1**：开发目录的「立即更新」改用 git pull --ff-only，并展示失败原因。
 - **v0.3.0**：新增「检查更新」；账号默认使用登录账号名并支持重命名/恢复默认；默认只显示「添加账号」并选择渠道登录；修复凭据 undefined 序列化导致登录失败、退出后卡片残留名字等问题。
 - **v0.2.11**：**一个账号一个 provider**——每个 ChatGPT 注册拥有独立卡片、独立目录与独立路由；胶囊体按账号分组，模型不混合；「恢复默认模型」改为向账号重新拉取 /v1/models。
 - **v0.2.10**：修复首次登录报「the sign-in callback carried no issued client id」——回环回调把 client_id 归一化为 clientId，粘贴回调同样适用。

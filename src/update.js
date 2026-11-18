@@ -6,10 +6,12 @@
  * files over this package. A development checkout (one containing `.git`) is
  * never overwritten; a restart of DSH is required after an update.
  */
+import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import { gunzipSync } from 'node:zlib'
 
 /** Repository the plugin is published from. */
@@ -156,8 +158,14 @@ function safeTarget(root, relative) {
 export async function applyUpdate(options = {}) {
   const root = options.root ?? packageRoot
   const fetchImpl = options.fetchImpl ?? fetch
-  if (options.allowDevelopment !== true && existsSync(join(root, '.git'))) {
-    return { updated: false, reason: 'development' }
+  if (existsSync(join(root, '.git'))) {
+    try {
+      const run = promisify(execFile)
+      const { stdout, stderr } = await run('git', ['-C', root, 'pull', '--ff-only'], { timeout: 120_000, windowsHide: true })
+      return { updated: true, version: installedVersion(root), method: 'git', detail: String(stdout || stderr).trim().slice(0, 400) }
+    } catch (error) {
+      return { updated: false, reason: 'git-failed', detail: String(error?.stderr ?? error?.message ?? error).trim().slice(0, 400) }
+    }
   }
   const status = await checkForUpdate({ fetchImpl, currentVersion: installedVersion(root) })
   if (!status.hasUpdate) return { updated: false, reason: 'latest', current: status.current, latest: status.latest }
@@ -202,3 +210,5 @@ export async function applyUpdate(options = {}) {
   }
   return { updated: true, version, previous: status.current }
 }
+
+

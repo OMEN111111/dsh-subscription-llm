@@ -50,7 +50,7 @@ window.__ModuleLoader__.load({
       updating: '正在更新…',
       updated: '已更新到',
       restartRequired: '重启 DSH 后生效',
-      devCheckout: '开发目录请用 git pull 更新',
+      updateFailed: '更新失败：',
       channelChatgpt: 'ChatGPT 订阅',
       channelClaude: 'Claude 订阅',
       channelAntigravity: 'Google Antigravity',
@@ -139,7 +139,7 @@ window.__ModuleLoader__.load({
       updating: 'Updating…',
       updated: 'Updated to',
       restartRequired: 'restart DSH to apply',
-      devCheckout: 'Development checkout: use git pull',
+      updateFailed: 'Update failed:',
       channelChatgpt: 'ChatGPT subscription',
       channelClaude: 'Claude subscription',
       channelAntigravity: 'Google Antigravity',
@@ -1536,6 +1536,7 @@ window.__ModuleLoader__.load({
     }
   },
 })
+
 
 
 
