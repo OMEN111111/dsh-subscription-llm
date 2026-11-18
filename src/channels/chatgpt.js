@@ -619,6 +619,21 @@ export default {
         if (text.length > 0) yield { type: 'text-delta', index: block.index, text }
         continue
       }
+      if (type === 'response.output_text.done' || type === 'response.refusal.done') {
+        // Short replies sometimes arrive only as a terminal `.done` payload.
+        const block = textBlock(String(event.item_id ?? 'text'))
+        if (block.opened !== true) {
+          block.opened = true
+          yield { type: 'block-start', index: block.index, blockType: 'text' }
+        }
+        const complete = String(event.text ?? event.refusal ?? '')
+        if (complete.length > block.text.length) {
+          const suffix = complete.slice(block.text.length)
+          block.text = complete
+          if (suffix.length > 0) yield { type: 'text-delta', index: block.index, text: suffix }
+        }
+        continue
+      }
       if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') {
         const key = `reasoning:${String(event.item_id ?? 'reasoning')}`
         let block = blocks.get(key)

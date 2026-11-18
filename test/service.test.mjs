@@ -638,3 +638,51 @@ test('concurrent requests share one token refresh', async () => {
   assert.equal(stored.refreshToken, 'refresh-2')
   service.dispose()
 })
+
+test('an in-stream provider failure becomes a finish error', async () => {
+  const host = makeHost()
+  host.records.set(recordKey('chatgpt'), {
+    kind: 'grant',
+    payload: { version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
+  })
+  const service = new SubscriptionService(host.ctx, config)
+  service.start()
+  await waitFor(() => host.adapters.has('chatgpt-sub'))
+  const adapter = host.adapters.get('chatgpt-sub')
+  const originalFetch = globalThis.fetch
+  const sse = 'data: {"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"usage limit reached"}}}\n\n'
+  globalThis.fetch = async () => new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  try {
+    const chunks = []
+    for await (const chunk of adapter.stream({ provider: 'chatgpt-sub', model: 'gpt-5.5', messages: [] })) chunks.push(chunk)
+    const finish = chunks.at(-1)
+    assert.equal(finish.type, 'finish')
+    assert.equal(finish.reason.kind, 'error')
+    assert.match(finish.reason.failure.message, /usage limit reached/u)
+  } finally {
+    globalThis.fetch = originalFetch
+    service.dispose()
+  }
+})
+
+test('a quota 429 maps to the QUOTA failure code', async () => {
+  const host = makeHost()
+  host.records.set(recordKey('chatgpt'), {
+    kind: 'grant',
+    payload: { version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
+  })
+  const service = new SubscriptionService(host.ctx, config)
+  service.start()
+  await waitFor(() => host.adapters.has('chatgpt-sub'))
+  const adapter = host.adapters.get('chatgpt-sub')
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: 'quota exceeded for this account' } }), { status: 429 })
+  try {
+    const chunks = []
+    for await (const chunk of adapter.stream({ provider: 'chatgpt-sub', model: 'gpt-5.5', messages: [] })) chunks.push(chunk)
+    assert.deepEqual(chunks.at(-1).reason.failure.code, 'QUOTA')
+  } finally {
+    globalThis.fetch = originalFetch
+    service.dispose()
+  }
+})
