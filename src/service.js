@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto'
 import { CHANNELS, CHANNEL_BY_ID } from './channels/index.js'
 import { SubscriptionAdapter } from './adapter.js'
-import { readLink, readSet, writeLink, clearLink, clearAccount, isFresh, accountKey, hasTokens, selectAccount, recordKey, PAYLOAD_VERSION } from './store.js'
+import { readLink, readSet, writeLink, clearLink, clearAccount, removeAccount, renameAccount, compactValue, isFresh, accountKey, hasTokens, selectAccount, recordKey, PAYLOAD_VERSION } from './store.js'
 import { message } from './copy.js'
 import { catalogPath, readCatalog, writeCatalog, emptyCatalog } from './catalog.js'
 import { probeModel } from './probe.js'
@@ -39,6 +39,7 @@ function positiveInt(value) {
  */
 function accountName(account) {
   if (typeof account.label === 'string' && account.label.length > 0) return account.label
+  if (typeof account.defaultLabel === 'string' && account.defaultLabel.length > 0) return account.defaultLabel
   if (typeof account.account === 'string' && account.account.includes('@')) {
     return account.account.slice(0, account.account.indexOf('@'))
   }
@@ -670,7 +671,7 @@ export class SubscriptionService {
           const key = accountKey(payload)
           const accounts = [
             ...current.accounts.filter(account => accountKey(account) !== key),
-            { ...payload, savedAt: new Date().toISOString() },
+            compactValue({ ...payload, savedAt: new Date().toISOString() }),
           ]
           await session.commit({
             kind: 'grant',
@@ -810,7 +811,10 @@ export class SubscriptionService {
     const route = instance.route
     this.instancesByRoute.set(route, instance)
     this.instancesByScope.set(instance.scope, instance)
-    if (this.routes.has(route)) return
+    if (this.routes.has(route)) {
+      this.announce(instance)
+      return
+    }
     try {
       const handle = this.llm.registerAdapter([route], this.adapter)
       this.routes.set(route, handle)
@@ -875,7 +879,7 @@ export class SubscriptionService {
   async state() {
     await this.syncRoutes()
     const instances = await this.buildInstances()
-    const channels = instances.map(instance => {
+    const channels = instances.filter(instance => hasTokens(instance.account)).map(instance => {
       const account = instance.account
       const linked = hasTokens(account)
       return {
@@ -898,22 +902,6 @@ export class SubscriptionService {
         expiresAt: typeof account.expiresAt === 'number' ? account.expiresAt : undefined,
       }
     })
-    // A channel with no saved registration still needs one card to sign in from.
-    for (const channel of CHANNELS) {
-      if (instances.some(instance => instance.channel.id === channel.id)) continue
-      const placeholder = this.instanceOf(channel, {}, channel.id, channel.route)
-      channels.push({
-        id: channel.id,
-        scope: channel.id,
-        channelId: channel.id,
-        route: channel.route,
-        name: this.label(channel),
-        channelName: this.label(channel),
-        linked: false,
-        modelCount: this.models(placeholder).length,
-        hiddenCount: 0,
-      })
-    }
     return { channels }
   }
 
@@ -1159,8 +1147,24 @@ export class SubscriptionService {
         this.ctx.logger.info('subscription-channels: revocation for %s failed: %s', accountKey(account), String(error?.message ?? error))
       }
     }
-    await clearAccount(this.ctx, channel.id, accountKey(account))
+    await removeAccount(this.ctx, channel.id, accountKey(account))
     await this.syncRoutes()
+    return this.state()
+  }
+
+  /**
+   * Give one registration a display name; an empty name restores the account
+   * default from the verified token.
+   * @param scope - provider instance scope.
+   * @param label - new display name, or empty to reset.
+   * @returns the refreshed channel state.
+   */
+  async renameAccount(scope, label) {
+    const instance = this.instance(scope)
+    if (instance === undefined || instance.account === undefined) throw new Error('unknown account')
+    await renameAccount(this.ctx, instance.channel.id, instance.accountKey, label)
+    await this.syncRoutes()
+    this.announce(instance)
     return this.state()
   }
 
@@ -1190,6 +1194,11 @@ export class SubscriptionService {
     this.routes.clear()
   }
 }
+
+
+
+
+
 
 
 

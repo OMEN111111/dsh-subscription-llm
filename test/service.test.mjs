@@ -11,6 +11,9 @@ import { normalizeConfig } from '../src/config.js'
 import { recordKey, readSet, readLink, writeLink, selectAccount } from '../src/store.js'
 import { CHANNEL_BY_ID } from '../src/channels/index.js'
 
+// Never reach the network: discovery gets a 404 unless a test installs its own mock.
+globalThis.fetch = async () => new Response('', { status: 404 })
+
 
 /** Route id of the (single) ChatGPT instance, once registered. */
 const chatgptRoute = host => [...host.adapters.keys()].find(route => route.startsWith('chatgpt-sub'))
@@ -137,13 +140,12 @@ function fakeChannel() {
   }
 }
 
-test('state lists three channels, none linked on a clean profile', async () => {
+test('a clean profile exposes no account cards', async () => {
   const host = makeHost()
   const service = new SubscriptionService(host.ctx, config)
   service.start()
   const state = await service.state()
-  assert.deepEqual(state.channels.map(channel => channel.id), ['chatgpt', 'claude', 'antigravity'])
-  assert.equal(state.channels.every(channel => channel.linked === false), true)
+  assert.deepEqual(state.channels, [])
   assert.equal(host.adapters.size, 0)
   assert.equal(host.flows.size, 3)
   service.dispose()
@@ -229,12 +231,12 @@ test('logging out withdraws the route and the stored grant', async () => {
   await waitFor(() => host.adapters.has('claude-sub'))
 
   const before = await service.state()
-  assert.equal(before.channels.find(channel => channel.id === 'claude').account, 'me@example.com')
+  assert.equal(before.channels.find(channel => channel.channelId === 'claude').account, 'me@example.com')
 
   await service.logout('claude')
   assert.equal(host.records.has(recordKey('claude')), false)
   assert.equal(host.adapters.has('claude-sub'), false)
-  assert.equal((await service.state()).channels.find(channel => channel.id === 'claude').linked, false)
+  assert.deepEqual((await service.state()).channels, [])
   service.dispose()
 })
 
@@ -348,8 +350,8 @@ test('state derives expiry from the stored grant', async () => {
   service.start()
   const state = await service.state()
   assert.equal(state.channels.find(channel => channel.channelId === 'chatgpt').status, 'expired')
-  assert.equal(state.channels.find(channel => channel.id === 'claude').status, 'expiring')
-  assert.equal(state.channels.find(channel => channel.id === 'antigravity').status, undefined)
+  assert.equal(state.channels.find(channel => channel.channelId === 'claude').status, 'expiring')
+  assert.equal(state.channels.some(channel => channel.channelId === 'antigravity'), false)
   service.dispose()
 })
 
@@ -719,7 +721,7 @@ test('a legacy ChatGPT grant is treated as signed out', async () => {
   const service = new SubscriptionService(host.ctx, config)
   service.start()
   const state = await service.state()
-  assert.equal(state.channels.find(entry => entry.channelId === 'chatgpt').linked, false)
+  assert.equal(state.channels.some(entry => entry.channelId === 'chatgpt'), false)
   assert.equal(await service.credential(CHANNEL_BY_ID.get('chatgpt'), undefined), undefined)
   service.dispose()
 })
@@ -741,13 +743,10 @@ test('signing out one account keeps the others and moves the selection', async (
   try {
     const state = await service.logoutAccount('chatgpt', 'oaiapp_b')
     const entries = state.channels.filter(entry => entry.channelId === 'chatgpt')
-    assert.equal(entries.length, 2)
-    const second = entries.find(entry => entry.accountKey === 'oaiapp_b')
-    assert.equal(second.linked, false)
-    assert.equal(second.name, 'second')
-    const first = entries.find(entry => entry.accountKey === 'oaiapp_a')
-    assert.equal(first.linked, true)
-    assert.equal(first.account, 'first@example.com')
+    assert.equal(entries.length, 1)
+    assert.equal(entries[0].accountKey, 'oaiapp_a')
+    assert.equal(entries[0].linked, true)
+    assert.equal(entries[0].account, 'first@example.com')
   } finally {
     globalThis.fetch = originalFetch
     service.dispose()
@@ -861,4 +860,63 @@ test('restoring defaults uses the account current catalog, not the static table'
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+
+test('undefined fields never reach the credential payload', async () => {
+  const host = makeHost({ withAuthorization: false })
+  await writeLink(host.ctx, 'chatgpt', {
+    flow: 'siwc',
+    clientId: 'oaiapp_clean',
+    account: 'clean@example.com',
+    label: undefined,
+    subject: undefined,
+    accessToken: 'tok',
+    refreshToken: 'ref',
+    expiresAt: Date.now() + 3_600_000,
+  })
+  const set = await readSet(host.ctx, 'chatgpt')
+  const stored = set.accounts[0]
+  assert.equal('label' in stored, false)
+  assert.equal('subject' in stored, false)
+  assert.equal(stored.account, 'clean@example.com')
+
+  const service = new SubscriptionService(host.ctx, config)
+  const channel = { id: 'chatgpt', name: { zh: 'ChatGPT', en: 'ChatGPT' }, async login() {
+    return { flow: 'siwc', clientId: 'oaiapp_flow', accessToken: 't', refreshToken: 'r', expiresAt: Date.now() + 3_600_000, label: undefined, subject: undefined }
+  } }
+  const attempt = { id: 'a1', channelId: 'chatgpt', status: 'pending', notices: [], prompt: undefined, cancelled: false, controller: new AbortController(), createdAt: Date.now() }
+  service.attempts.set('a1', attempt)
+  service.active.set('chatgpt', attempt)
+  await service.runAttempt(attempt, channel)
+  const committed = host.records.get(recordKey('chatgpt')).payload.accounts.find(entry => entry.clientId === 'oaiapp_flow')
+  assert.ok(committed !== undefined)
+  assert.equal('label' in committed, false)
+  assert.equal('subject' in committed, false)
+  service.dispose()
+})
+
+
+
+test('renaming an account overrides the token name and can be reset', async () => {
+  const host = makeHost()
+  await writeLink(host.ctx, 'chatgpt', {
+    flow: 'siwc',
+    clientId: 'oaiapp_name',
+    account: 'name@example.com',
+    defaultLabel: 'Token Name',
+    accessToken: 'tok',
+    refreshToken: 'ref',
+    expiresAt: Date.now() + 3_600_000,
+  })
+  const service = new SubscriptionService(host.ctx, config)
+  const before = await service.state()
+  assert.equal(before.channels[0].name, 'Token Name')
+
+  const renamed = await service.renameAccount(before.channels[0].id, '自定义名字')
+  assert.equal(renamed.channels[0].name, '自定义名字')
+
+  const reset = await service.renameAccount(before.channels[0].id, '')
+  assert.equal(reset.channels[0].name, 'Token Name')
+  service.dispose()
 })

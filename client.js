@@ -37,6 +37,23 @@ window.__ModuleLoader__.load({
       failed: '登录失败',
       cancelled: '登录已取消',
       confirmLogout: '确认退出',
+      close: '关闭',
+      rename: '重命名',
+      save: '保存',
+      renameHint: '留空后保存，或点「恢复默认」使用账号名称',
+      resetName: '恢复默认',
+      checkUpdate: '检查更新',
+      checking: '正在检查…',
+      updateAvailable: '发现新版本',
+      upToDate: '已是最新版本',
+      updateNow: '立即更新',
+      updating: '正在更新…',
+      updated: '已更新到',
+      restartRequired: '重启 DSH 后生效',
+      devCheckout: '开发目录请用 git pull 更新',
+      channelChatgpt: 'ChatGPT 订阅',
+      channelClaude: 'Claude 订阅',
+      channelAntigravity: 'Google Antigravity',
       retry: '重试',
       answerPlaceholder: '在此粘贴授权码或回调地址',
       loading: '读取中…',
@@ -109,6 +126,23 @@ window.__ModuleLoader__.load({
       failed: 'Sign-in failed',
       cancelled: 'Sign-in cancelled',
       confirmLogout: 'Confirm sign-out',
+      close: 'Close',
+      rename: 'Rename',
+      save: 'Save',
+      renameHint: 'Leave empty and save, or press Restore to use the account name',
+      resetName: 'Restore',
+      checkUpdate: 'Check for updates',
+      checking: 'Checking…',
+      updateAvailable: 'New version',
+      upToDate: 'Up to date',
+      updateNow: 'Update now',
+      updating: 'Updating…',
+      updated: 'Updated to',
+      restartRequired: 'restart DSH to apply',
+      devCheckout: 'Development checkout: use git pull',
+      channelChatgpt: 'ChatGPT subscription',
+      channelClaude: 'Claude subscription',
+      channelAntigravity: 'Google Antigravity',
       retry: 'Retry',
       answerPlaceholder: 'Paste the authorization code or callback URL',
       loading: 'Loading…',
@@ -894,16 +928,138 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** One channel row plus its inline sign-in panel and editor. */
+    /** One signed-in account: identity, editor, and sign-out. */
     function ChannelRow(props) {
       const { channel, t, onChanged } = props
+      const [editing, setEditing] = React.useState(false)
+      const [busy, setBusy] = React.useState(false)
+      const [error, setError] = React.useState(undefined)
+      const [confirming, setConfirming] = React.useState(false)
+      const [renaming, setRenaming] = React.useState(false)
+      const [renameValue, setRenameValue] = React.useState('')
+
+      const rename = async (value = renameValue) => {
+        setBusy(true)
+        setError(undefined)
+        try {
+          await api('/account/rename', { method: 'POST', body: JSON.stringify({ channel: channel.scope, label: value }) })
+          setRenaming(false)
+          await onChanged()
+        } catch (failure) {
+          setError(friendlyError(failure.message ?? failure, t))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const signOut = async () => {
+        setError(undefined)
+        setConfirming(false)
+        setBusy(true)
+        try {
+          await api('/logout', { method: 'POST', body: JSON.stringify({ channel: channel.scope }) })
+          await onChanged()
+        } catch (failure) {
+          setError(friendlyError(failure.message ?? failure, t))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      return h(
+        'li',
+        { className: 'sc-card' },
+        h(
+          'div',
+          { className: 'sc-rowHead' },
+          h(
+            'span',
+            { className: 'sc-rowIdentity' },
+            h('span', { className: 'sc-rowName' }, channel.name),
+            h(
+              'span',
+              { className: 'sc-accountStatus sc-accountStatusOn' },
+              t('linked'),
+              channel.account ? ` · ${channel.account}` : '',
+            ),
+          ),
+          h(
+            'span',
+            { className: 'sc-rowActions' },
+            h('button', {
+              type: 'button',
+              className: 'sc-secondaryButton',
+              'aria-expanded': editing,
+              disabled: busy,
+              onClick: () => setEditing(value => !value),
+            }, t('edit')),
+            h('button', {
+              type: 'button',
+              className: 'sc-secondaryButton',
+              disabled: busy,
+              onClick: () => {
+                setRenameValue(channel.name)
+                setRenaming(true)
+                setEditing(false)
+              },
+            }, t('rename')),
+            h('button', {
+              type: 'button',
+              className: 'sc-dangerButton',
+              disabled: busy,
+              onClick: () => {
+                if (confirming) {
+                  void signOut()
+                  return
+                }
+                setConfirming(true)
+                setTimeout(() => setConfirming(false), 4000)
+              },
+            }, confirming ? t('confirmLogout') : t('logout')),
+          ),
+        ),
+        error === undefined ? null : h('p', { className: 'sc-error', role: 'alert' }, error),
+        renaming
+          ? h(
+            'div',
+            { className: 'sc-panel' },
+            h('label', { className: 'sc-note', htmlFor: 'sc-rename' }, t('renameHint')),
+            h('input', {
+              id: 'sc-rename',
+              className: 'sc-input',
+              value: renameValue,
+              placeholder: channel.name,
+              disabled: busy,
+              onChange: event => setRenameValue(event.target.value),
+              onKeyDown: event => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  void rename()
+                }
+              },
+            }),
+            h(
+              'div',
+              { className: 'sc-panelActions' },
+              h('button', { type: 'button', className: 'sc-secondaryButton', disabled: busy, onClick: () => setRenaming(false) }, t('cancel')),
+              h('button', { type: 'button', className: 'sc-secondaryButton', disabled: busy, onClick: () => { void rename('') } }, t('resetName')),
+              h('button', { type: 'button', className: 'sc-secondaryButton', disabled: busy, onClick: () => { void rename() } }, t('save')),
+            ),
+          )
+          : null,
+        editing ? h(CatalogPanel, { channel, t, onSaved: () => { void onChanged() } }) : null,
+      )
+    }
+
+    /** The add-account flow: pick a channel, then run its sign-in. */
+    function AddAccountPanel(props) {
+      const { t, onDone, onCancel } = props
+      const [channelId, setChannelId] = React.useState(undefined)
       const [attemptId, setAttemptId] = React.useState(undefined)
       const [attempt, setAttempt] = React.useState(undefined)
       const [answer, setAnswer] = React.useState('')
       const [busy, setBusy] = React.useState(false)
       const [error, setError] = React.useState(undefined)
-      const [confirming, setConfirming] = React.useState(false)
-      const [editing, setEditing] = React.useState(false)
 
       React.useEffect(() => {
         if (attemptId === undefined) return undefined
@@ -920,10 +1076,10 @@ window.__ModuleLoader__.load({
             }
             setAttemptId(undefined)
             setBusy(false)
-            await onChanged()
+            await onDone()
           } catch (failure) {
             if (stopped) return
-            setAttempt({ status: 'failed', error: String(failure.message ?? failure) })
+            setError(String(failure.message ?? failure))
             setAttemptId(undefined)
             setBusy(false)
           }
@@ -933,24 +1089,31 @@ window.__ModuleLoader__.load({
           stopped = true
           if (timer !== undefined) clearTimeout(timer)
         }
-      }, [attemptId, onChanged])
+      }, [attemptId, onDone])
 
-      const [accountLabel, setAccountLabel] = React.useState('')
-      const start = async () => {
-        setError(undefined)
-        setAttempt(undefined)
+      const start = async (id) => {
+        setChannelId(id)
         setBusy(true)
+        setError(undefined)
         try {
-          const started = await api('/login', { method: 'POST', body: JSON.stringify({ channel: channel.channelId ?? channel.id, label: accountLabel.trim().length > 0 ? accountLabel.trim() : undefined, accountKey: channel.accountKey }) })
+          const started = await api('/login', { method: 'POST', body: JSON.stringify({ channel: id }) })
           if (started.status === 'authorized') {
-            setBusy(false)
-            setAttempt({ status: 'authorized' })
-            await onChanged()
+            await onDone()
             return
           }
           setAttemptId(started.attemptId)
         } catch (failure) {
+          setError(String(failure.message ?? failure))
           setBusy(false)
+        }
+      }
+
+      const respond = async () => {
+        if (attemptId === undefined || answer.trim().length === 0) return
+        try {
+          await api('/answer', { method: 'POST', body: JSON.stringify({ id: attemptId, value: answer }) })
+          setAnswer('')
+        } catch (failure) {
           setError(String(failure.message ?? failure))
         }
       }
@@ -964,44 +1127,13 @@ window.__ModuleLoader__.load({
           }
         }
         setAttemptId(undefined)
-        setAttempt({ status: 'cancelled' })
         setBusy(false)
+        setAttempt(undefined)
+        setChannelId(undefined)
       }
 
-      const signOut = async () => {
-        setError(undefined)
-        setConfirming(false)
-        setBusy(true)
-        try {
-          await api('/logout', { method: 'POST', body: JSON.stringify({ channel: channel.scope ?? channel.id }) })
-          setAttempt(undefined)
-          setEditing(false)
-          await onChanged()
-        } catch (failure) {
-          setError(friendlyError(failure.message ?? failure, t))
-        } finally {
-          setBusy(false)
-        }
-      }
-
-      const promptMessage = attempt !== undefined && attempt.prompt !== undefined ? attempt.prompt.message : undefined
-      React.useEffect(() => { setAnswer('') }, [promptMessage])
-
-      const respond = async () => {
-        if (attemptId === undefined || answer.trim().length === 0) return
-        try {
-          await api('/answer', { method: 'POST', body: JSON.stringify({ id: attemptId, value: answer }) })
-        } catch (failure) {
-          setError(friendlyError(failure.message ?? failure, t))
-        }
-      }
-
-      const running = attemptId !== undefined
       const prompt = attempt !== undefined && attempt.status === 'pending' ? attempt.prompt : undefined
       const notices = attempt !== undefined && Array.isArray(attempt.notices) ? attempt.notices : []
-      const signedIn = channel.linked === true && channel.status !== 'expired'
-      const expired = channel.status === 'expired'
-      const status = expired ? t('expired') : signedIn ? t('linked') : t('notLinked')
 
       return h(
         'li',
@@ -1009,123 +1141,57 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'sc-rowHead' },
-          h(
-            'span',
-            { className: 'sc-rowIdentity' },
-            h('span', { className: 'sc-rowName' }, channel.name),
-            channel.linked === true
-              ? h('span', {
-                className: expired ? 'sc-dot sc-dotMissing' : 'sc-dot',
-                role: 'img',
-                'aria-label': status,
-                title: status,
-              })
-              : null,
-            h(
-              'span',
-              { className: signedIn ? 'sc-accountStatus sc-accountStatusOn' : 'sc-accountStatus' },
-              status,
-              signedIn && channel.account ? ` · ${channel.account}` : '',
-            ),
-          ),
-          h(
-            'span',
-            { className: 'sc-rowActions' },
-            running
-              ? h('button', { type: 'button', className: 'sc-secondaryButton', onClick: () => { void cancel() } }, t('cancel'))
-              : null,
-            !running && channel.linked !== true
-              ? h('button', { type: 'button', className: 'sc-secondaryButton', disabled: busy, onClick: () => { void start() } }, t('login'))
-              : null,
-            !running && channel.linked === true
-              ? h('button', {
-                type: 'button',
-                className: 'sc-secondaryButton',
-                'aria-expanded': editing,
-                disabled: busy,
-                onClick: () => setEditing(value => !value),
-              }, t('edit'))
-              : null,
-            !running && channel.linked === true
-              ? h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'sc-dangerButton',
-                  disabled: busy,
-                  onClick: () => {
-                    if (confirming) {
-                      void signOut()
-                      return
-                    }
-                    setConfirming(true)
-                    setTimeout(() => setConfirming(false), 4000)
-                  },
-                },
-                confirming ? t('confirmLogout') : t('logout'),
-              )
-              : null,
-          ),
+          h('span', { className: 'sc-rowIdentity' }, h('span', { className: 'sc-rowName' }, t('addAccount'))),
         ),
-        error === undefined
-          ? null
-          : h(
-            'p',
-            { className: 'sc-error', role: 'alert' },
-            `${t('failed')}: ${friendlyError(error, t)}`,
-            h('button', {
+        channelId === undefined
+          ? h(
+            'div',
+            { className: 'sc-channelChoices' },
+            ...[
+              { id: 'chatgpt', label: t('channelChatgpt') },
+              { id: 'claude', label: t('channelClaude') },
+              { id: 'antigravity', label: t('channelAntigravity') },
+            ].map(choice => h('button', {
+              key: choice.id,
               type: 'button',
-              className: 'sc-linkButton',
-              onClick: () => { setError(undefined); void start() },
-            }, t('retry')),
-          ),
-        !signedIn && (channel.channelId ?? channel.id) === 'chatgpt'
-          ? h(
-            'div',
-            { className: 'sc-panel' },
-            h('label', { className: 'sc-field' },
-              h('span', { className: 'sc-fieldLabel' }, t('accountName')),
-              h('input', {
-                className: 'sc-input',
-                value: accountLabel,
-                placeholder: t('accountNameHint'),
-                disabled: busy,
-                onChange: event => setAccountLabel(event.target.value),
-              }),
-            ),
+              className: 'sc-secondaryButton',
+              disabled: busy,
+              onClick: () => { void start(choice.id) },
+            }, choice.label)),
           )
-          : null,
-        running
-          ? h(
+          : h(
             'div',
             { className: 'sc-panel' },
-            notices.length === 0
+            notices.length === 0 && busy
               ? h('p', { className: 'sc-note' }, t('waitingLink'))
-              : notices.map((notice, index) => h(
-                'p',
-                { className: 'sc-note', key: `notice-${index}` },
-                notice.message,
-                notice.code !== undefined ? h('code', { className: 'sc-code' }, notice.code) : null,
-                notice.url !== undefined
-                  ? h(
-                    'a',
-                    { className: 'sc-link', href: notice.url, target: '_blank', rel: 'noreferrer noopener' },
-                    t('openLink'),
-                  )
-                  : null,
-              )),
-            prompt !== undefined
-              ? h(
+              : null,
+            ...notices.map((notice, index) => h(
+              'p',
+              { className: 'sc-note', key: `notice-${index}` },
+              notice.message,
+              notice.code !== undefined ? h('code', { className: 'sc-code' }, notice.code) : null,
+              notice.url !== undefined
+                ? h('a', {
+                  className: 'sc-link',
+                  href: notice.url,
+                  target: '_blank',
+                  rel: 'noreferrer noopener',
+                }, t('openLink'))
+                : null,
+            )),
+            prompt === undefined
+              ? null
+              : h(
                 'div',
                 { className: 'sc-prompt' },
-                h('label', { className: 'sc-note', htmlFor: `sc-answer-${channel.id}` }, prompt.message),
+                h('label', { className: 'sc-note', htmlFor: 'sc-add-answer' }, prompt.message),
                 h('input', {
-                  id: `sc-answer-${channel.id}`,
+                  id: 'sc-add-answer',
                   className: 'sc-input',
                   value: answer,
-                  placeholder: prompt.placeholder ?? t('answerPlaceholder'),
+                  placeholder: prompt.placeholder ?? '',
                   onChange: event => setAnswer(event.target.value),
-                  onKeyDown: (event) => {
+                  onKeyDown: event => {
                     if (event.key === 'Enter') {
                       event.preventDefault()
                       void respond()
@@ -1138,40 +1204,43 @@ window.__ModuleLoader__.load({
                   disabled: answer.trim().length === 0,
                   onClick: () => { void respond() },
                 }, t('submit')),
-              )
-              : null,
-          )
-          : null,
-        attempt !== undefined && attempt.status === 'authorized'
-          ? h('p', { className: 'sc-ok', role: 'status' }, t('succeeded'))
-          : null,
-        attempt !== undefined && attempt.status === 'cancelled'
-          ? h('p', { className: 'sc-note', role: 'status' }, t('cancelled'))
-          : null,
-        attempt !== undefined && attempt.status === 'failed'
-          ? h(
-            'p',
-            { className: 'sc-error', role: 'alert' },
-            `${t('failed')}: ${friendlyError(attempt.error ?? '', t)}`,
-            h('button', {
-              type: 'button',
-              className: 'sc-linkButton',
-              onClick: () => { setAttempt(undefined); void start() },
-            }, t('retry')),
-          )
-          : null,
-        editing && channel.linked === true
-          ? h(CatalogPanel, { channel: { ...channel, id: channel.scope ?? channel.id }, t, onSaved: () => { void onChanged() } })
-          : null,
+              ),
+            h(
+              'div',
+              { className: 'sc-panelActions' },
+              h('button', { type: 'button', className: 'sc-secondaryButton', onClick: () => { void cancel() } }, t('cancel')),
+              onCancel === undefined ? null : h('button', { type: 'button', className: 'sc-secondaryButton', onClick: onCancel }, t('close')),
+            ),
+          ),
+        error === undefined ? null : h('p', { className: 'sc-error', role: 'alert' }, error),
       )
     }
 
-    /** The Models-page entry: a dashed button that expands into the channel list. */
+    /** The Models-page entry: signed-in accounts plus one add button. */
     function SubscriptionChannels(props) {
       const t = props.t
-      const [open, setOpen] = React.useState(false)
       const [state, setState] = React.useState({ status: 'loading', channels: [] })
       const [adding, setAdding] = React.useState(false)
+      const [update, setUpdate] = React.useState({ status: 'idle' })
+
+      const checkUpdate = async () => {
+        setUpdate({ status: 'checking' })
+        try {
+          const result = await api('/update/check')
+          setUpdate({ status: 'ready', ...result })
+        } catch (failure) {
+          setUpdate({ status: 'failed', error: String(failure.message ?? failure) })
+        }
+      }
+      const installUpdate = async () => {
+        setUpdate(current => ({ ...current, status: 'applying' }))
+        try {
+          const result = await api('/update/apply', { method: 'POST' })
+          setUpdate({ status: 'done', ...result })
+        } catch (failure) {
+          setUpdate({ status: 'failed', error: String(failure.message ?? failure) })
+        }
+      }
 
       const refresh = React.useCallback(async () => {
         try {
@@ -1182,85 +1251,73 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      React.useEffect(() => { void refresh() }, [refresh])
       React.useEffect(() => {
-        if (open && state.status === 'loading') void refresh()
-      }, [open, state.status, refresh])
-
-      React.useEffect(() => {
-        if (!open) return undefined
         const onVisible = () => {
           if (document.visibilityState === 'visible') void refresh()
         }
-        document.addEventListener('visibilitychange', onVisible)
         window.addEventListener('focus', onVisible)
-        return () => {
-          document.removeEventListener('visibilitychange', onVisible)
-          window.removeEventListener('focus', onVisible)
-        }
-      }, [open, refresh])
-
-      const linkedCount = state.channels.filter(channel => channel.linked === true && channel.status !== 'expired').length
+        return () => window.removeEventListener('focus', onVisible)
+      }, [refresh])
 
       return h(
         'div',
         { className: 'sc-root' },
         h(StyleSheet),
-        h(
-          'button',
-          {
-            type: 'button',
-            className: 'sc-entry',
-            'aria-expanded': open,
-            onClick: () => setOpen(value => !value),
-          },
-          h(IconPlus),
-          h(
-            'span',
-            { className: 'sc-entryText' },
-            h('span', { className: 'sc-entryLabel' }, t('entry')),
-            h('span', { className: 'sc-entrySub' }, t('entrySub')),
-          ),
-          linkedCount > 0 ? h('span', { className: 'sc-badge' }, `${linkedCount}`) : null,
-          h('span', { className: 'sc-entrySpacer' }),
-          h(IconChevron, { open }),
-        ),
-        open
+        state.status === 'failed' ? h('p', { className: 'sc-error', role: 'alert' }, String(state.error ?? '')) : null,
+        state.status === 'ready'
           ? h(
-            'div',
-            { className: 'sc-body' },
-            state.status === 'failed'
-              ? h('p', { className: 'sc-error', role: 'alert' }, String(state.error ?? ''))
-              : null,
-            state.status === 'ready'
-              ? h(
-                'ul',
-                { className: 'sc-list' },
-                state.channels.map(channel => h(ChannelRow, {
-                  key: channel.id,
-                  channel,
-                  t,
-                  onChanged: refresh,
-                })),
-                adding
-                  ? h(ChannelRow, {
-                    key: 'chatgpt-new',
-                    channel: { id: 'chatgpt-new', scope: 'chatgpt-new', channelId: 'chatgpt', name: t('newChatgptAccount'), linked: false },
-                    t,
-                    onChanged: async () => { setAdding(false); await refresh() },
-                  })
-                  : null,
-              )
-              : null,
-            state.status === 'ready' && !adding
-              ? h('div', { className: 'sc-addRow' }, h('button', {
-                type: 'button',
-                className: 'sc-secondaryButton',
-                onClick: () => setAdding(true),
-              }, t('addAccount')))
-              : null,
-            h('p', { className: 'sc-foot' }, t('footnote')),
+            'ul',
+            { className: 'sc-list' },
+            state.channels.map(channel => h(ChannelRow, {
+              key: channel.id,
+              channel,
+              t,
+              onChanged: refresh,
+            })),
           )
           : null,
+        adding
+          ? h(
+            'ul',
+            { className: 'sc-list' },
+            h(AddAccountPanel, {
+              t,
+              onDone: async () => { setAdding(false); await refresh() },
+              onCancel: () => setAdding(false),
+            }),
+          )
+          : h('button', {
+            type: 'button',
+            className: 'sc-addAccount',
+            onClick: () => setAdding(true),
+          }, h(IconPlus), t('addAccount')),
+        h(
+          'div',
+          { className: 'sc-update' },
+          h('button', {
+            type: 'button',
+            className: 'sc-secondaryButton',
+            disabled: update.status === 'checking' || update.status === 'applying',
+            onClick: () => { void checkUpdate() },
+          }, t('checkUpdate')),
+          update.status === 'checking' ? h('span', { className: 'sc-updateText' }, t('checking')) : null,
+          update.status === 'ready'
+            ? h('span', { className: 'sc-updateText' }, update.hasUpdate
+              ? `${t('updateAvailable')} v${update.latest}`
+              : `${t('upToDate')} v${update.current}`)
+            : null,
+          update.status === 'ready' && update.hasUpdate
+            ? h('button', { type: 'button', className: 'sc-secondaryButton', onClick: () => { void installUpdate() } }, t('updateNow'))
+            : null,
+          update.status === 'applying' ? h('span', { className: 'sc-updateText' }, t('updating')) : null,
+          update.status === 'done'
+            ? h('span', { className: 'sc-updateText' }, update.updated
+              ? `${t('updated')} v${update.version} · ${t('restartRequired')}`
+              : update.reason === 'development' ? t('devCheckout') : `${t('upToDate')} v${update.latest ?? update.current}`)
+            : null,
+          update.status === 'failed' ? h('span', { className: 'sc-error' }, update.error) : null,
+        ),
       )
     }
 
@@ -1345,6 +1402,12 @@ window.__ModuleLoader__.load({
     .sc-field { display: flex; flex-direction: column; gap: 4px; }
     .sc-fieldLabel { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
     .sc-addRow { display: flex; justify-content: flex-end; }
+    .sc-addAccount { display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: 100%; box-sizing: border-box; min-height: 44px; padding: 8px 14px; cursor: pointer; font: inherit; color: var(--dsw-alias-label-primary); background: transparent; border: 0.5px dashed var(--dsw-alias-border-l3, var(--dsw-alias-border-l2)); border-radius: var(--dsw-radius-xl, 16px); }
+    .sc-addAccount:hover { background: var(--dsw-alias-bg-layer-2); }
+    .sc-channelChoices { display: flex; flex-wrap: wrap; gap: 8px; }
+    .sc-panelActions { display: flex; justify-content: flex-end; gap: 8px; }
+    .sc-update { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+    .sc-updateText { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
     .sc-accountRowWrap { display: flex; align-items: center; gap: 6px; }
     .sc-accountRow { flex: 1; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border: 0.5px solid var(--dsw-alias-border-l4, var(--dsw-alias-border-l1)); border-radius: var(--dsw-radius-md, 8px); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
     .sc-accountRow[data-selected='true'] { border-color: var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary)); }
@@ -1473,6 +1536,10 @@ window.__ModuleLoader__.load({
     }
   },
 })
+
+
+
+
 
 
 

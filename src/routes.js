@@ -1,4 +1,5 @@
 /** HTTP surface the settings page talks to: one provider instance per account. */
+import { checkForUpdate, applyUpdate } from './update.js'
 
 const BASE = '/api/dsh-subscription-channels'
 
@@ -38,6 +39,10 @@ export function registerRoutes(ctx, service) {
   }
 
   register('/state', ['GET'], async () => json(await service.state()))
+
+  register('/update/check', ['GET'], async () => json(await checkForUpdate()))
+
+  register('/update/apply', ['POST'], async () => json(await applyUpdate()))
 
   register('/login', ['POST'], async (request) => {
     const input = await body(request)
@@ -127,6 +132,11 @@ export function registerRoutes(ctx, service) {
     return json(await service.state())
   })
 
+  register('/account/rename', ['POST'], async (request) => {
+    const input = await body(request)
+    return json(await service.renameAccount(input.channel, input.label))
+  })
+
   register('/account/logout', ['POST'], async (request) => {
     const input = await body(request)
     const instance = target(input.channel)
@@ -135,6 +145,8 @@ export function registerRoutes(ctx, service) {
     return json(await service.state())
   })
 }
+
+
 
 
 

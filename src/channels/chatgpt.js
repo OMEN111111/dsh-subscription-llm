@@ -105,7 +105,6 @@ export function siwcAuthorizeUrl(request) {
  */
 async function loginSiwc(request) {
   const { interaction, signal, config, previous } = request
-  const requestedLabel = typeof request.label === 'string' && request.label.trim().length > 0 ? request.label.trim() : undefined
   const hostId = typeof config.hostId === 'string' && config.hostId.length > 0 ? config.hostId : undefined
   if (hostId === undefined) throw new Error(message(config.lang, 'siwcHostMissing'))
   const pkce = createPkce()
@@ -126,7 +125,7 @@ async function loginSiwc(request) {
     nonce,
     codeChallenge: pkce.challenge,
     hostId,
-    ...returningClientId === undefined ? { agentName: requestedLabel ?? config.siwcAgentName } : {},
+    ...returningClientId === undefined ? { agentName: config.siwcAgentName } : {},
     ...returningClientId === undefined ? {} : { idTokenHint: previous.idToken },
     ...returningClientId === undefined ? {} : { loginHint: previous.account },
   })
@@ -168,6 +167,12 @@ async function loginSiwc(request) {
   const granted = typeof token.scope === 'string' ? token.scope.split(/\s+/u) : []
   if (!granted.includes(SIWC.planScope)) throw new Error(message(config.lang, 'siwcPlanRequired'))
   const claims = await verifyIdToken(token.id_token, { clientId, nonce, signal })
+  const email = typeof claims.email === 'string' ? claims.email : undefined
+  // The name the browser account carries; the consent screen's editable agent
+  // name is not returned to the client, so the verified profile name is used.
+  const profileName = typeof claims.name === 'string' && claims.name.trim().length > 0
+    ? claims.name.trim()
+    : email !== undefined && email.includes('@') ? email.slice(0, email.indexOf('@')) : undefined
   return {
     flow: FLOW_SIWC,
     accessToken: token.access_token,
@@ -176,9 +181,9 @@ async function loginSiwc(request) {
     clientId,
     expiresAt: expiresAt(typeof token.expires_in === 'number' ? token.expires_in : 3600),
     scope: token.scope ?? SIWC.scope,
-    subject: typeof claims.sub === 'string' ? claims.sub : undefined,
-    account: typeof claims.email === 'string' ? claims.email : undefined,
-    label: requestedLabel ?? previous?.label,
+    ...typeof claims.sub === 'string' ? { subject: claims.sub } : {},
+    ...email === undefined ? {} : { account: email },
+    ...profileName === undefined ? {} : { defaultLabel: profileName },
   }
 }
 
@@ -597,6 +602,8 @@ function mapUsage(usage) {
       : {}),
   }
 }
+
+
 
 
 

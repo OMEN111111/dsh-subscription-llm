@@ -83,6 +83,26 @@ export async function readSet(ctx, channelId) {
 }
 
 /**
+ * Remove `undefined` leaves from a value.
+ *
+ * The credential store serializes payloads strictly; an object property whose
+ * value is `undefined` (for example an omitted display label) makes the whole
+ * record unwritable. Strip them at the boundary instead of at every call site.
+ * @param value - any JSON-ish value.
+ * @returns the same value without undefined object properties.
+ */
+export function compactValue(value) {
+  if (Array.isArray(value)) return value.map(entry => compactValue(entry)).filter(entry => entry !== undefined)
+  if (value === null || typeof value !== 'object') return value
+  const output = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry === undefined) continue
+    output[key] = compactValue(entry)
+  }
+  return output
+}
+
+/**
  * Replace one channel's credential set.
  * @param ctx - owning plugin context.
  * @param channelId - channel identity.
@@ -93,11 +113,11 @@ export async function writeSet(ctx, channelId, set) {
   if (credentials === undefined) throw new Error('this composition mounts no credential store')
   await credentials.modifyRecord(recordKey(channelId), async () => ({
     kind: 'grant',
-    payload: {
+    payload: compactValue({
       version: PAYLOAD_VERSION,
       accounts: set.accounts,
       ...typeof set.selected === 'string' && set.selected.length > 0 ? { selected: set.selected } : {},
-    },
+    }),
   }))
 }
 
@@ -123,7 +143,7 @@ export async function readLink(ctx, channelId) {
 export async function writeLink(ctx, channelId, payload) {
   const set = await readSet(ctx, channelId)
   const key = accountKey(payload)
-  const accounts = [...set.accounts.filter(account => accountKey(account) !== key), payload]
+  const accounts = [...set.accounts.filter(account => accountKey(account) !== key), compactValue(payload)]
   await writeSet(ctx, channelId, { accounts, selected: key })
 }
 
@@ -179,6 +199,29 @@ export async function clearLink(ctx, channelId, options = {}) {
  * @param key - the registration's storage key.
  * @returns the selected registration, or undefined when it holds no tokens.
  */
+export async function renameAccount(ctx, channelId, key, label) {
+  const set = await readSet(ctx, channelId)
+  const cleaned = typeof label === 'string' ? label.trim() : ''
+  const accounts = set.accounts.map((account) => {
+    if (accountKey(account) !== String(key)) return account
+    if (cleaned.length === 0) {
+      const { label: _discarded, ...rest } = account
+      return rest
+    }
+    return { ...account, label: cleaned }
+  })
+  await writeSet(ctx, channelId, { accounts, selected: set.selected })
+  return accounts
+}
+
+export async function removeAccount(ctx, channelId, key) {
+  const set = await readSet(ctx, channelId)
+  const accounts = set.accounts.filter(account => accountKey(account) !== String(key))
+  const next = accounts.find(account => hasTokens(account))
+  await writeSet(ctx, channelId, { accounts, selected: next === undefined ? undefined : accountKey(next) })
+  return accounts
+}
+
 export async function selectAccount(ctx, channelId, key) {
   const set = await readSet(ctx, channelId)
   const account = set.accounts.find(entry => accountKey(entry) === key)
@@ -197,4 +240,6 @@ export function isFresh(link, skewMs = 60_000) {
   if (typeof link.expiresAt !== 'number') return true
   return link.expiresAt - Date.now() > skewMs
 }
+
+
 
