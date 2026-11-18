@@ -63,6 +63,7 @@ dsh plugin --profile <你的 profile 名> add github:OMEN111111/dsh-subscription
 
 登录后点渠道卡片上的 **编辑** 打开 **模型目录**（与 DSH 自带「自定义模型 API」面板同构）：
 
+- 每个账号一张卡片、一份目录：删除/改名/排序只影响该账号，不会串到其他账号。
 - 每行：拖动排序、模型 ID、显示名称、展开、删除。删除会立即把该行从编辑器里移除，同时不再出现在模型选择器。
 - **获取可用模型** 弹出可用模型列表（默认勾选当前被移除的模型），确认后把勾选项加回目录；**恢复默认模型** 清掉全部改动。
 - 展开一行的 **模型选项**：上下文窗口、最大输出 token 数（均支持 `131072` / `256K` / `1M`）、输入类型（文本 / 图片）、推理等级。
@@ -130,7 +131,7 @@ export const CLIENT_SECRET = '<the antigravity client secret>'
 
 ## 测试
 
-仓库带有 54 项单元/集成测试，覆盖三条线路的流解析与请求体构造、图片序列化、令牌轮换、路由同步、超时结算、目录覆盖与可见性、检测结果分类：
+仓库带有 56 项单元/集成测试，覆盖三条线路的流解析与请求体构造、图片序列化、令牌轮换、路由同步、超时结算、目录覆盖与可见性、检测结果分类：
 
 ```bash
 npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
@@ -147,6 +148,7 @@ npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
 
 ## 版本
 
+- **v0.2.11**：**一个账号一个 provider**——每个 ChatGPT 注册拥有独立卡片、独立目录与独立路由；登录前填写的账号名同时作为授权页 agent 名称和胶囊体分组名；「恢复默认模型」改为向账号重新拉取 /v1/models，新发布的模型会出现在目录中；账号之间模型不混合。
 - **v0.2.10**：修复首次登录报「the sign-in callback carried no issued client id」——回环回调把 client_id 归一化为 clientId，粘贴回调同样适用。
 - **v0.2.9**：图片输入打通（模型按 /v1/models 的 input_modalities 声明，未声明时静态表兜底；已用真实账号发送 PNG 验证）；模型目录同时带入 context_window、推理档位与默认档位。
 - **v0.2.8**：账号列表自动命名（邮箱前缀）并显示 client=… 前缀；支持逐个退出账号（两步确认），退出当前账号后自动切到仍可用的账号。
@@ -167,6 +169,7 @@ npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
 ---
 
 **English**: A DeepSeek Harness plugin that adds a *subscription channels* entry to Settings → Models, letting you sign in to existing ChatGPT, Google Antigravity, or Claude subscriptions (OAuth + PKCE, credentials in the local DSH store) and use their models directly. Unofficial upstream endpoints; text and tool calls only; MIT licensed.
+
 
 
 

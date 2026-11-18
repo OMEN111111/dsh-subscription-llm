@@ -1,36 +1,27 @@
-/**
- * HTTP seat for the Models-page card.
- *
- * These are exact Fetch routes on the connection's `/api` channel, so the
- * browser page reaches them with its normal session cookie and nothing else
- * does: an exact route answers only the owner principal.
- */
+/** HTTP surface the settings page talks to: one provider instance per account. */
 
-import { CHANNEL_BY_ID } from './channels/index.js'
-
-/** Route prefix owned by this plugin. */
 const BASE = '/api/dsh-subscription-channels'
 
 /**
- * Register every route the card calls.
- * @param ctx - a context that carries the `connection` service.
+ * Register this plugin's routes on the host connection.
+ * @param ctx - the plugin context carrying the `connection` service.
  * @param service - the subscription service.
  */
 export function registerRoutes(ctx, service) {
   const connection = ctx.get('connection')
   if (connection === undefined) return
-  const json = (body, status = 200) => new Response(JSON.stringify(body), {
+  const json = (value, status = 200) => new Response(JSON.stringify(value), {
     status,
     headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
   })
   const body = async (request) => {
     try {
-      const parsed = await request.json()
-      return parsed !== null && typeof parsed === 'object' ? parsed : {}
+      return JSON.parse(await request.text())
     } catch (_noBody) {
       return {}
     }
   }
+  const target = value => service.instance(String(value ?? ''))
   const register = (path, methods, handler) => {
     ctx.effect(() => connection.fetch.register({
       path: BASE + path,
@@ -50,7 +41,7 @@ export function registerRoutes(ctx, service) {
 
   register('/login', ['POST'], async (request) => {
     const input = await body(request)
-    return json(service.login(input.channel, { newAccount: input.newAccount === true }))
+    return json(service.login(input.channel, { label: input.label, accountKey: input.accountKey }))
   })
 
   register('/attempt', ['GET'], async (request) => {
@@ -72,75 +63,78 @@ export function registerRoutes(ctx, service) {
   })
 
   register('/catalog', ['GET'], async (request) => {
-    const channel = CHANNEL_BY_ID.get(String(new URL(request.url).searchParams.get('channel') ?? ''))
-    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
-    return json(service.channelCatalog(channel))
+    const instance = target(new URL(request.url).searchParams.get('channel'))
+    if (instance === undefined) return json({ error: 'unknown provider instance' }, 404)
+    return json(await service.channelCatalog(instance))
   })
 
   register('/catalog/model', ['POST'], async (request) => {
     const input = await body(request)
-    const channel = CHANNEL_BY_ID.get(String(input.channel ?? ''))
-    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
+    const instance = target(input.channel)
+    if (instance === undefined) return json({ error: 'unknown provider instance' }, 404)
     if (input.create === true) {
-      return json(await service.createModel(channel, input.model, input.name))
+      return json(await service.createModel(instance, input.model, input.name))
     }
-    return json(await service.updateModel(channel, String(input.model ?? ''), input.patch ?? {}))
+    return json(await service.updateModel(instance, String(input.model ?? ''), input.patch ?? {}))
   })
 
   register('/catalog/order', ['POST'], async (request) => {
     const input = await body(request)
-    const channel = CHANNEL_BY_ID.get(String(input.channel ?? ''))
-    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
-    return json(await service.updateOrder(channel, input.order))
+    const instance = target(input.channel)
+    if (instance === undefined) return json({ error: 'unknown provider instance' }, 404)
+    return json(await service.updateOrder(instance, input.order))
   })
 
   register('/catalog/reset', ['POST'], async (request) => {
     const input = await body(request)
-    const channel = CHANNEL_BY_ID.get(String(input.channel ?? ''))
-    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
-    return json(await service.resetCatalog(channel))
+    const instance = target(input.channel)
+    if (instance === undefined) return json({ error: 'unknown provider instance' }, 404)
+    return json(await service.resetCatalog(instance))
   })
 
   register('/catalog/adopt', ['POST'], async (request) => {
     const input = await body(request)
-    const channel = CHANNEL_BY_ID.get(String(input.channel ?? ''))
-    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
-    return json(await service.adoptModels(channel, input.models))
+    const instance = target(input.channel)
+    if (instance === undefined) return json({ error: 'unknown provider instance' }, 404)
+    return json(await service.adoptModels(instance, input.models))
   })
 
   register('/catalog/discover', ['POST'], async (request) => {
     const input = await body(request)
-    const channel = CHANNEL_BY_ID.get(String(input.channel ?? ''))
-    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
-    const view = await service.discover(channel, { restore: input.restore === true })
-    return json(view)
+    const instance = target(input.channel)
+    if (instance === undefined) return json({ error: 'unknown provider instance' }, 404)
+    return json(await service.discover(instance, { restore: input.restore === true }))
   })
 
   register('/test', ['POST'], async (request) => {
     const input = await body(request)
-    const channel = CHANNEL_BY_ID.get(String(input.channel ?? ''))
-    if (channel === undefined) return json({ error: 'unknown subscription channel' }, 404)
-    const verdict = await service.testModel(channel, String(input.model ?? ''), request.signal)
-    return json(verdict)
+    const instance = target(input.channel)
+    if (instance === undefined) return json({ error: 'unknown provider instance' }, 404)
+    return json(await service.testModel(instance, String(input.model ?? '')))
   })
+
+  register('/logout', ['POST'], async (request) => {
+    const input = await body(request)
+    await service.logout(input.channel)
+    return json(await service.state())
+  })
+
+  // Kept for older settings pages: selecting an account is no longer required
+  // now that every registration owns its own provider route.
   register('/account/select', ['POST'], async (request) => {
     const input = await body(request)
-    return json(await service.selectAccount(input.channel, input.key))
+    await service.selectAccount(input.channel, input.key)
+    return json(await service.state())
   })
 
   register('/account/logout', ['POST'], async (request) => {
     const input = await body(request)
-    return json(await service.logoutAccount(input.channel, input.key))
-  })
-
-  register('/logout', ['POST'], async (request) => {
-    const { channel } = await body(request)
-    await service.logout(channel)
-    return json({ ok: true })
+    const instance = target(input.channel)
+    if (instance === undefined) return json({ error: 'unknown provider instance' }, 404)
+    await service.logoutAccount(instance.channel.id, instance.accountKey)
+    return json(await service.state())
   })
 }
-
-
 
 
 

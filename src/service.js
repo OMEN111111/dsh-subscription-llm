@@ -62,8 +62,16 @@ export class SubscriptionService {
     this.forceNewAccount = new Set()
     /** `channel:clientId` -> the refresh attempt other callers await */
     this.refreshing = new Map()
+    /** channel id -> display label for the sign-in currently starting */
+    this.pendingLabels = new Map()
+    /** channel id -> registration being reauthorized, if any */
+    this.pendingKeys = new Map()
     /** channel id -> adapter registration handle */
     this.routes = new Map()
+    /** route id -> instance (one per linked account) */
+    this.instancesByRoute = new Map()
+    /** scope id -> instance */
+    this.instancesByScope = new Map()
     /** Durable per-channel catalog: visibility, per-model overrides, last discovery. */
     this.catalogPath = catalogPath(ctx)
     this.catalog = readCatalog(this.catalogPath)
@@ -81,12 +89,85 @@ export class SubscriptionService {
   }
 
   /**
-   * The display name of one channel in the configured language.
-   * @param channel - channel module.
+   * Resolve one provider instance by its scope id.
+   * @param scope - UI/catalog identity.
+   * @returns the instance, or a placeholder for a channel with no registration.
+   */
+  instance(scope) {
+    const raw = String(scope ?? '')
+    const known = this.instancesByScope.get(raw)
+    if (known !== undefined) return known
+    const channel = CHANNEL_BY_ID.get(raw)
+    return channel === undefined ? undefined : this.instanceOf(channel, {}, channel.id, channel.route)
+  }
+
+  /**
+   * The display name of one provider: the account's own label for a ChatGPT
+   * registration, else the channel's localized name.
+   * @param target - channel module or instance.
    * @returns the label.
    */
-  label(channel) {
-    return this.config.lang === 'en' ? channel.name.en : channel.name.zh
+  label(target) {
+    if (typeof target?.label === 'string' && target.label.length > 0) return target.label
+    return this.config.lang === 'en' ? target.name.en : target.name.zh
+  }
+
+  /**
+   * Build one provider instance for a registration.
+   * @param channel - channel module.
+   * @param account - stored registration.
+   * @param scope - catalog scope and UI identity.
+   * @param route - LLM route id.
+   * @returns the instance, shaped as a channel for the catalog helpers.
+   */
+  instanceOf(channel, account, scope, route) {
+    const label = channel.id === 'chatgpt' ? accountName(account) : this.label(channel)
+    return {
+      ...channel,
+      id: scope,
+      scope,
+      route,
+      label,
+      channel,
+      account,
+      accountKey: accountKey(account),
+      requiresFlow: channel.requiresFlow,
+    }
+  }
+
+  /**
+   * Every provider instance this profile should expose: one per ChatGPT
+   * registration (linked or signed out) and one per remaining channel.
+   * @returns the instance list.
+   */
+  async buildInstances() {
+    const instances = []
+    for (const channel of CHANNELS) {
+      const set = await readSet(this.ctx, channel.id)
+      const accounts = set.accounts.filter(account => channel.requiresFlow === undefined || account.flow === channel.requiresFlow)
+      if (channel.id === 'chatgpt') {
+        for (const account of accounts) {
+          const suffix = accountKey(account).replace(/[^A-Za-z0-9]/gu, '').slice(-8).toLowerCase()
+          instances.push(this.instanceOf(channel, account, `chatgpt-${suffix}`, `chatgpt-sub-${suffix}`))
+        }
+        continue
+      }
+      const account = accounts.find(entry => accountKey(entry) === set.selected && hasTokens(entry))
+        ?? accounts.find(entry => hasTokens(entry))
+      if (account !== undefined) instances.push(this.instanceOf(channel, account, channel.id, channel.route))
+    }
+    // One-time migration: the pre-multi-account catalog belonged to the single
+    // ChatGPT registration; hand it to the first account's scope.
+    const legacy = this.catalog.channels.chatgpt
+    if (legacy !== undefined) {
+      const first = instances.find(instance => instance.channel.id === 'chatgpt')
+      if (first !== undefined && this.catalog.channels[first.scope] === undefined) {
+        this.catalog.channels[first.scope] = legacy
+      }
+      delete this.catalog.channels.chatgpt
+      void this.persistCatalog()
+    }
+    return instances
   }
 
   /**
@@ -237,7 +318,7 @@ export class SubscriptionService {
     }
     await this.persistCatalog()
     this.announce(channel)
-    return { ...this.channelCatalog(channel), adopted: added }
+    return { ...await this.channelCatalog(channel), adopted: added }
   }
 
   /**
@@ -245,11 +326,12 @@ export class SubscriptionService {
    * catalog edit or discovery. `replace` re-emits `llm/adapters-updated`.
    * @param channel - channel module.
    */
-  announce(channel) {
-    const handle = this.routes.get(channel.id)
+  announce(target) {
+    const route = target.route
+    const handle = this.routes.get(route)
     if (handle === undefined) return
     try {
-      handle.replace([channel.route])
+      handle.replace([route])
     } catch (_announceFailed) {
       // A disposed registration simply means the channel is signed out now.
     }
@@ -270,7 +352,14 @@ export class SubscriptionService {
    * @param channel - channel module.
    * @returns the visible catalog view.
    */
-  channelCatalog(channel) {
+  async channelCatalog(target) {
+    const channel = target
+    // First open after a restart: ask the account for its catalog once instead
+    // of showing the static fallback until someone presses "fetch".
+    if (target.account !== undefined && hasTokens(target.account)
+      && (this.catalog.channels[target.id]?.discovered?.length ?? 0) === 0) {
+      await this.refreshModels(target)
+    }
     const stored = this.channelState(channel.id)
     const all = this.catalogModels(channel)
     const models = all.filter(entry => entry.visible)
@@ -366,7 +455,7 @@ export class SubscriptionService {
     stored.overrides[modelId] = next
     await this.persistCatalog()
     this.announce(channel)
-    return this.channelCatalog(channel)
+    return await this.channelCatalog(channel)
   }
 
   /**
@@ -405,7 +494,7 @@ export class SubscriptionService {
     await this.persistCatalog()
     this.announce(channel)
     return {
-      ...this.channelCatalog(channel),
+      ...await this.channelCatalog(channel),
       discoveredModels: models.length,
       candidates: stored.discovered.map(model => ({ id: model.id, name: model.name ?? model.id })),
     }
@@ -423,7 +512,7 @@ export class SubscriptionService {
     stored.order = (Array.isArray(ids) ? ids : []).filter(id => known.has(id))
     await this.persistCatalog()
     this.announce(channel)
-    return this.channelCatalog(channel)
+    return await this.channelCatalog(channel)
   }
 
   /**
@@ -449,7 +538,7 @@ export class SubscriptionService {
     stored.deleted = stored.deleted.filter(entry => entry !== modelId)
     await this.persistCatalog()
     this.announce(channel)
-    return this.channelCatalog(channel)
+    return await this.channelCatalog(channel)
   }
 
   /**
@@ -458,11 +547,14 @@ export class SubscriptionService {
    * @param channel - channel module.
    * @returns the reset catalog view.
    */
-  async resetCatalog(channel) {
-    this.catalog.channels[channel.id] = { deleted: [], overrides: {}, discovered: [], custom: [], order: [] }
+  async resetCatalog(target) {
+    this.catalog.channels[target.id] = { deleted: [], overrides: {}, discovered: [], custom: [], order: [] }
     await this.persistCatalog()
-    this.announce(channel)
-    return this.channelCatalog(channel)
+    // "Restore defaults" means the account's current catalog, not the static
+    // fallback table: ask the provider again before publishing the list.
+    if (target.account !== undefined && hasTokens(target.account)) await this.refreshModels(target)
+    this.announce(target)
+    return await this.channelCatalog(target)
   }
 
   /**
@@ -557,7 +649,10 @@ export class SubscriptionService {
         label: this.label(channel),
         methods: [{ id: 'oauth', label: this.config.lang === 'en' ? 'Browser sign-in' : '浏览器登录' }],
         run: async (session) => {
-          const previous = this.forceNewAccount.has(channel.id) ? undefined : await this.usableLink(channel)
+          const pendingKey = this.pendingKeys.get(channel.id)
+          const previous = this.forceNewAccount.has(channel.id)
+            ? undefined
+            : pendingKey === undefined ? await this.usableLink(channel) : await this.accountByKey(channel, pendingKey)
           const payload = await channel.login({
             interaction: {
               notify: notice => { session.notify(notice) },
@@ -566,6 +661,8 @@ export class SubscriptionService {
             signal: session.signal,
             config: this.config,
             previous,
+            label: this.pendingLabels.get(channel.id),
+            accountKey: this.pendingKeys.get(channel.id),
           })
           // Merge into the channel's credential set: one registration per issued
           // client id, and the fresh one becomes selected.
@@ -579,7 +676,7 @@ export class SubscriptionService {
             kind: 'grant',
             payload: { version: PAYLOAD_VERSION, accounts, selected: key },
           })
-          this.registerRoute(channel)
+          await this.syncRoutes()
         },
       }))
     }
@@ -613,9 +710,24 @@ export class SubscriptionService {
     return link
   }
 
-  async credential(channel, signal) {
-    const link = await this.usableLink(channel)
-    if (link === undefined) return undefined
+  /**
+   * Read one registration by its storage key, tokens or not.
+   * @param channel - channel module.
+   * @param key - issued client id.
+   * @returns the stored registration.
+   */
+  async accountByKey(channel, key) {
+    const set = await readSet(this.ctx, channel.id)
+    return set.accounts.find(entry => accountKey(entry) === String(key))
+  }
+
+  async credential(target, signal) {
+    const channel = target.channel ?? target
+    const link = target.accountKey === undefined
+      ? await this.usableLink(channel)
+      : target.account
+    if (link === undefined || !hasTokens(link)) return undefined
+    if (link.flow !== undefined && channel.requiresFlow !== undefined && link.flow !== channel.requiresFlow) return undefined
     if (isFresh(link)) return link
     if (typeof link.refreshToken !== 'string' || link.refreshToken.length === 0) return link
     const key = `${channel.id}:${accountKey(link)}`
@@ -624,7 +736,9 @@ export class SubscriptionService {
       pending = (async () => {
         try {
           // Another process may have rotated the grant while this one waited.
-          const current = await this.usableLink(channel)
+          const current = target.accountKey === undefined
+            ? await this.usableLink(channel)
+            : (await readSet(this.ctx, channel.id)).accounts.find(entry => accountKey(entry) === target.accountKey)
           const base = current !== undefined && accountKey(current) === accountKey(link) ? current : link
           if (isFresh(base)) return base
           const next = await channel.refresh(base, this.config)
@@ -641,7 +755,7 @@ export class SubscriptionService {
       if (signal?.aborted === true) return next
       return next
     } catch (error) {
-      await this.dropRoute(channel)
+      await this.dropRoute(target.route ?? channel.route)
       throw error
     }
   }
@@ -650,9 +764,12 @@ export class SubscriptionService {
    * Forget a channel's grant after the provider rejected it.
    * @param channel - channel module.
    */
-  invalidate(channel) {
-    void this.dropRoute(channel)
-    void clearLink(this.ctx, channel.id).catch(() => {})
+  async invalidate(target) {
+    const channel = target.channel ?? target
+    if (target.accountKey === undefined) await clearLink(this.ctx, channel.id)
+    else await clearAccount(this.ctx, channel.id, target.accountKey)
+    await this.dropRoute(target.route ?? channel.route)
+    await this.syncRoutes()
   }
 
   /**
@@ -660,14 +777,15 @@ export class SubscriptionService {
    * catalog stays authoritative when the account cannot answer.
    * @param channel - channel module.
    */
-  async refreshModels(channel) {
+  async refreshModels(target) {
+    const channel = target.channel ?? target
     if (typeof channel.discoverModels !== 'function') return
     try {
-      const link = await readLink(this.ctx, channel.id)
-      if (link === undefined) return
+      const link = await this.credential(target).catch(() => undefined)
+      if (link === undefined || !hasTokens(link)) return
       const models = await channel.discoverModels(link, this.config)
       if (!Array.isArray(models) || models.length === 0) return
-      const stored = this.catalog.channels[channel.id] ?? { deleted: [], overrides: {}, discovered: [], custom: [], order: [] }
+      const stored = this.catalog.channels[target.id] ?? { deleted: [], overrides: {}, discovered: [], custom: [], order: [] }
       stored.discovered = models.map(model => ({
         id: String(model.id),
         name: typeof model.name === 'string' ? model.name : String(model.id),
@@ -680,30 +798,37 @@ export class SubscriptionService {
         ...typeof model.family === 'string' ? { family: model.family } : {},
       }))
       stored.discoveredAt = Date.now()
-      this.catalog.channels[channel.id] = stored
+      this.catalog.channels[target.id] = stored
       await this.persistCatalog()
     } catch (_discoveryFailed) {
       // Keep the previous snapshot when discovery cannot answer.
     }
   }
 
-  /** Register the LLM route one linked channel owns. */
-  registerRoute(channel) {
-    if (this.routes.has(channel.id)) return
+  /** Register the LLM route one provider instance owns. */
+  registerRoute(instance) {
+    const route = instance.route
+    this.instancesByRoute.set(route, instance)
+    this.instancesByScope.set(instance.scope, instance)
+    if (this.routes.has(route)) return
     try {
-      const handle = this.llm.registerAdapter([channel.route], this.adapter)
-      this.routes.set(channel.id, handle)
-      void this.refreshModels(channel)
+      const handle = this.llm.registerAdapter([route], this.adapter)
+      this.routes.set(route, handle)
+      void this.refreshModels(instance)
     } catch (error) {
-      this.ctx.logger.warn('subscription-channels: cannot register route %s: %s', channel.route, String(error?.message ?? error))
+      this.ctx.logger.warn('subscription-channels: cannot register route %s: %s', route, String(error?.message ?? error))
     }
   }
 
-  /** Withdraw one channel's LLM route. */
-  async dropRoute(channel) {
-    const handle = this.routes.get(channel.id)
+  /** Withdraw one provider's LLM route. */
+  async dropRoute(target) {
+    const route = typeof target === 'string' ? target : target.route
+    const instance = this.instancesByRoute.get(route)
+    if (instance !== undefined) this.instancesByScope.delete(instance.scope)
+    this.instancesByRoute.delete(route)
+    const handle = this.routes.get(route)
     if (handle === undefined) return
-    this.routes.delete(channel.id)
+    this.routes.delete(route)
     try {
       handle()
     } catch (_alreadyDisposed) {
@@ -725,11 +850,12 @@ export class SubscriptionService {
       return this.syncing
     }
     this.syncing = (async () => {
-      for (const channel of CHANNELS) {
-        const link = await this.usableLink(channel)
-        if (link === undefined) await this.dropRoute(channel)
-        else this.registerRoute(channel)
+      const instances = (await this.buildInstances()).filter(instance => hasTokens(instance.account))
+      const wanted = new Set(instances.map(instance => instance.route))
+      for (const route of [...this.routes.keys()]) {
+        if (!wanted.has(route)) await this.dropRoute(route)
       }
+      for (const instance of instances) this.registerRoute(instance)
     })()
     try {
       await this.syncing
@@ -747,35 +873,45 @@ export class SubscriptionService {
    * @returns channel views.
    */
   async state() {
-    const channels = []
+    await this.syncRoutes()
+    const instances = await this.buildInstances()
+    const channels = instances.map(instance => {
+      const account = instance.account
+      const linked = hasTokens(account)
+      return {
+        id: instance.scope,
+        scope: instance.scope,
+        channelId: instance.channel.id,
+        route: instance.route,
+        name: instance.label,
+        channelName: this.label(instance.channel),
+        linked,
+        status: !linked
+          ? undefined
+          : isFresh(account)
+            ? 'linked'
+            : typeof account.refreshToken === 'string' && account.refreshToken.length > 0 ? 'expiring' : 'expired',
+        account: typeof account.account === 'string' ? account.account : undefined,
+        accountKey: instance.accountKey,
+        modelCount: this.models(instance).length,
+        hiddenCount: this.catalogModels(instance).length - this.models(instance).length,
+        expiresAt: typeof account.expiresAt === 'number' ? account.expiresAt : undefined,
+      }
+    })
+    // A channel with no saved registration still needs one card to sign in from.
     for (const channel of CHANNELS) {
-      const set = await readSet(this.ctx, channel.id)
-      const link = await this.usableLink(channel)
+      if (instances.some(instance => instance.channel.id === channel.id)) continue
+      const placeholder = this.instanceOf(channel, {}, channel.id, channel.route)
       channels.push({
         id: channel.id,
+        scope: channel.id,
+        channelId: channel.id,
         route: channel.route,
         name: this.label(channel),
-        linked: link !== undefined,
-        // `expired` is the only state that needs a new sign-in: the access
-        // token is gone and no refresh token can replace it.
-        status: link === undefined
-          ? undefined
-          : isFresh(link)
-            ? 'linked'
-            : typeof link.refreshToken === 'string' && link.refreshToken.length > 0 ? 'expiring' : 'expired',
-        account: typeof link?.account === 'string' ? link.account : undefined,
-        accounts: set.accounts.filter(account => channel.requiresFlow === undefined || account.flow === channel.requiresFlow).map(account => ({
-          key: accountKey(account),
-          name: accountName(account),
-          clientPrefix: accountKey(account) === 'default' ? undefined : accountKey(account).slice(0, 12),
-          email: typeof account.account === 'string' ? account.account : undefined,
-          subject: typeof account.subject === 'string' ? account.subject : undefined,
-          linked: hasTokens(account),
-          selected: accountKey(account) === set.selected,
-        })),
-        modelCount: this.models(channel).length,
-        hiddenCount: this.catalogModels(channel).length - this.models(channel).length,
-        expiresAt: typeof link?.expiresAt === 'number' ? link.expiresAt : undefined,
+        channelName: this.label(channel),
+        linked: false,
+        modelCount: this.models(placeholder).length,
+        hiddenCount: 0,
       })
     }
     return { channels }
@@ -792,7 +928,13 @@ export class SubscriptionService {
     if (channel === undefined) throw new Error(`unknown subscription channel "${String(channelId)}"`)
     const running = this.active.get(channel.id)
     if (running !== undefined) return { status: 'pending', attemptId: running.id }
-    if (options.newAccount === true) this.forceNewAccount.add(channel.id)
+    // Every ChatGPT sign-in creates (or refreshes) one registration; other
+    // channels keep a single grant.
+    const newAccount = channel.id === 'chatgpt' ? options.accountKey === undefined : options.newAccount === true
+    if (newAccount) this.forceNewAccount.add(channel.id)
+    const attemptLabel = typeof options.label === 'string' && options.label.trim().length > 0 ? options.label.trim() : undefined
+    if (attemptLabel !== undefined) this.pendingLabels.set(channel.id, attemptLabel)
+    if (typeof options.accountKey === 'string' && options.accountKey.length > 0) this.pendingKeys.set(channel.id, options.accountKey)
     const attempt = {
       id: randomUUID(),
       channelId: channel.id,
@@ -801,7 +943,9 @@ export class SubscriptionService {
       prompt: undefined,
       error: undefined,
       cancelled: false,
-      newAccount: options.newAccount === true,
+      newAccount,
+      accountKey: typeof options.accountKey === 'string' && options.accountKey.length > 0 ? options.accountKey : undefined,
+      label: typeof options.label === 'string' && options.label.trim().length > 0 ? options.label.trim() : undefined,
       controller: new AbortController(),
       createdAt: Date.now(),
     }
@@ -849,9 +993,9 @@ export class SubscriptionService {
       }
     }, this.config.loginTimeoutMs)
     try {
-      const payload = await this.authorize(channel, interaction, attempt.controller.signal, { newAccount: attempt.newAccount === true })
+      const payload = await this.authorize(channel, interaction, attempt.controller.signal, { newAccount: attempt.newAccount === true, label: attempt.label, accountKey: attempt.accountKey })
       await writeLink(this.ctx, channel.id, payload)
-      this.registerRoute(channel)
+      await this.syncRoutes()
       attempt.status = 'authorized'
       interaction.notify({ message: message(this.config.lang, 'succeeded') })
     } catch (error) {
@@ -871,6 +1015,8 @@ export class SubscriptionService {
         attempt.prompt = undefined
       }
       this.active.delete(channel.id)
+      this.forceNewAccount.delete(channel.id)
+      this.pendingLabels.delete(channel.id)
       const retention = setTimeout(() => this.attempts.delete(attempt.id), ATTEMPT_RETENTION_MS)
       retention.unref?.()
     }
@@ -886,13 +1032,18 @@ export class SubscriptionService {
    */
   async authorize(channel, interaction, signal, options = {}) {
     const authorization = this.ctx.get('authorization')
-    const previous = options.newAccount === true ? undefined : await this.usableLink(channel)
+    const previous = options.newAccount === true
+      ? undefined
+      : options.accountKey === undefined
+        ? await this.usableLink(channel)
+        : await this.accountByKey(channel, options.accountKey)
     if (authorization === undefined) {
       return channel.login({
         interaction,
         signal,
         config: this.config,
         previous,
+        label: options.label,
       })
     }
     const outcome = await authorization.begin({
@@ -961,11 +1112,17 @@ export class SubscriptionService {
    * @param channelId - which channel.
    */
   async logout(channelId) {
-    const channel = CHANNEL_BY_ID.get(channelId)
-    if (channel === undefined) throw new Error(`unknown subscription channel "${String(channelId)}"`)
+    const raw = String(channelId)
+    const instance = this.instancesByScope.get(raw) ?? this.instancesByRoute.get(raw)
+    if (instance !== undefined && instance.channel.id === 'chatgpt') {
+      return this.logoutAccount(instance.channel.id, instance.accountKey)
+    }
+    const channel = CHANNEL_BY_ID.get(raw)
+    if (channel === undefined) throw new Error(`unknown subscription channel "${raw}"`)
     const running = this.active.get(channel.id)
     if (running !== undefined) this.cancel(running.id)
-    const link = await readLink(this.ctx, channel.id)
+    const set = await readSet(this.ctx, channel.id)
+    const link = set.accounts.find(account => hasTokens(account))
     if (link !== undefined && typeof channel.revoke === 'function') {
       try {
         await channel.revoke(link, this.config)
@@ -978,7 +1135,8 @@ export class SubscriptionService {
     // A Sign in with ChatGPT registration keeps its issued client id and identity
     // so the same account can be reauthorized; catalog edits stay user preferences.
     await clearLink(this.ctx, channel.id, { keepRegistrations: link?.flow === 'siwc' })
-    await this.dropRoute(channel)
+    await this.dropRoute(channel.route)
+    await this.syncRoutes()
     await this.persistCatalog()
   }
 
@@ -1001,10 +1159,8 @@ export class SubscriptionService {
         this.ctx.logger.info('subscription-channels: revocation for %s failed: %s', accountKey(account), String(error?.message ?? error))
       }
     }
-    const accounts = await clearAccount(this.ctx, channel.id, accountKey(account))
-    if (accounts.some(hasTokens)) this.registerRoute(channel)
-    else await this.dropRoute(channel)
-    this.announce(channel)
+    await clearAccount(this.ctx, channel.id, accountKey(account))
+    await this.syncRoutes()
     return this.state()
   }
 
@@ -1019,8 +1175,7 @@ export class SubscriptionService {
     if (channel === undefined) throw new Error(`unknown subscription channel "${String(channelId)}"`)
     const account = await selectAccount(this.ctx, channel.id, String(key ?? ''))
     if (account === undefined) throw new Error('that account has no usable tokens; sign in again')
-    this.registerRoute(channel)
-    this.announce(channel)
+    await this.syncRoutes()
     return this.state()
   }
 
@@ -1035,6 +1190,15 @@ export class SubscriptionService {
     this.routes.clear()
   }
 }
+
+
+
+
+
+
+
+
+
 
 
 

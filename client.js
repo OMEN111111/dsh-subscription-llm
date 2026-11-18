@@ -17,6 +17,9 @@ window.__ModuleLoader__.load({
       login: '登录',
       addAccount: '添加账号',
       accountsTitle: 'ChatGPT 账号',
+      accountName: '账号名称',
+      accountNameHint: '例如：个人号、工作号',
+      newChatgptAccount: '新的 ChatGPT 账号',
       accountSelected: '当前账号',
       accountNeedsLogin: '需重新登录',
       signOutAccount: '退出',
@@ -86,6 +89,9 @@ window.__ModuleLoader__.load({
       login: 'Sign in',
       addAccount: 'Add account',
       accountsTitle: 'ChatGPT accounts',
+      accountName: 'Account name',
+      accountNameHint: 'e.g. Personal, Work',
+      newChatgptAccount: 'New ChatGPT account',
       accountSelected: 'Current account',
       accountNeedsLogin: 'Sign in again',
       signOutAccount: 'Sign out',
@@ -625,88 +631,6 @@ window.__ModuleLoader__.load({
       return translated === key ? (fallback ?? id) : translated
     }
 
-    /** The per-channel account list: switch the active registration or end one. */
-    function AccountSection(props) {
-      const { channel, t, onChanged } = props
-      const [busy, setBusy] = React.useState(undefined)
-      const [error, setError] = React.useState(undefined)
-      const [confirming, setConfirming] = React.useState(undefined)
-      const accounts = channel.accounts ?? []
-      if (accounts.length === 0) return null
-      const select = async (key) => {
-        setBusy(key)
-        setError(undefined)
-        setConfirming(undefined)
-        try {
-          await api('/account/select', { method: 'POST', body: JSON.stringify({ channel: channel.id, key }) })
-          await onChanged()
-        } catch (cause) {
-          setError(String(cause.message ?? cause))
-        } finally {
-          setBusy(undefined)
-        }
-      }
-      const signOut = async (account) => {
-        if (confirming !== account.key) {
-          setConfirming(account.key)
-          setError(undefined)
-          setTimeout(() => setConfirming(current => (current === account.key ? undefined : current)), 5000)
-          return
-        }
-        setBusy(account.key)
-        setConfirming(undefined)
-        setError(undefined)
-        try {
-          await api('/account/logout', { method: 'POST', body: JSON.stringify({ channel: channel.id, key: account.key }) })
-          await onChanged()
-        } catch (cause) {
-          setError(String(cause.message ?? cause))
-        } finally {
-          setBusy(undefined)
-        }
-      }
-      return h(
-        'section',
-        { className: 'sc-accountPicker' },
-        h(
-          'div',
-          { className: 'sc-modelCatalogHeading' },
-          h('span', { className: 'sc-modelCatalogTitle' }, t('accountsTitle')),
-        ),
-        ...accounts.map(account => h(
-          'div',
-          { key: account.key, className: 'sc-accountRowWrap' },
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'sc-accountRow',
-              'data-selected': account.selected === true ? 'true' : 'false',
-              title: account.email ?? account.key,
-              disabled: account.linked !== true || busy !== undefined,
-              onClick: () => { if (account.selected !== true && account.linked === true) void select(account.key) },
-            },
-            h('span', { className: 'sc-accountEmail' }, account.email ?? account.name ?? `${account.key.slice(0, 14)}…`),
-            account.clientPrefix === undefined
-              ? null
-              : h('span', { className: 'sc-accountClient' }, `client=${account.clientPrefix}…`),
-            h('span', { className: 'sc-accountMeta' }, account.linked !== true
-              ? t('accountNeedsLogin')
-              : account.selected === true ? t('accountSelected') : ''),
-          ),
-          account.linked === true
-            ? h('button', {
-              type: 'button',
-              className: confirming === account.key ? 'sc-accountSignOut sc-accountSignOutConfirm' : 'sc-accountSignOut',
-              disabled: busy !== undefined,
-              onClick: () => { void signOut(account) },
-            }, confirming === account.key ? t('confirmSignOutAccount') : t('signOutAccount'))
-            : null,
-        )),
-        error === undefined ? null : h('p', { className: 'sc-error', role: 'alert' }, error),
-      )
-    }
-
     function CatalogPanel(props) {
       const { channel, t, onSaved } = props
       const [status, setStatus] = React.useState('idle')
@@ -1011,12 +935,13 @@ window.__ModuleLoader__.load({
         }
       }, [attemptId, onChanged])
 
-      const start = async (newAccount = false) => {
+      const [accountLabel, setAccountLabel] = React.useState('')
+      const start = async () => {
         setError(undefined)
         setAttempt(undefined)
         setBusy(true)
         try {
-          const started = await api('/login', { method: 'POST', body: JSON.stringify({ channel: channel.id, newAccount }) })
+          const started = await api('/login', { method: 'POST', body: JSON.stringify({ channel: channel.channelId ?? channel.id, label: accountLabel.trim().length > 0 ? accountLabel.trim() : undefined, accountKey: channel.accountKey }) })
           if (started.status === 'authorized') {
             setBusy(false)
             setAttempt({ status: 'authorized' })
@@ -1048,7 +973,7 @@ window.__ModuleLoader__.load({
         setConfirming(false)
         setBusy(true)
         try {
-          await api('/logout', { method: 'POST', body: JSON.stringify({ channel: channel.id }) })
+          await api('/logout', { method: 'POST', body: JSON.stringify({ channel: channel.scope ?? channel.id }) })
           setAttempt(undefined)
           setEditing(false)
           await onChanged()
@@ -1121,14 +1046,6 @@ window.__ModuleLoader__.load({
                 onClick: () => setEditing(value => !value),
               }, t('edit'))
               : null,
-            !running && channel.linked === true && channel.id === 'chatgpt'
-              ? h('button', {
-                type: 'button',
-                className: 'sc-secondaryButton',
-                disabled: busy,
-                onClick: () => { void start(true) },
-              }, t('addAccount'))
-              : null,
             !running && channel.linked === true
               ? h(
                 'button',
@@ -1162,6 +1079,22 @@ window.__ModuleLoader__.load({
               onClick: () => { setError(undefined); void start() },
             }, t('retry')),
           ),
+        !signedIn && (channel.channelId ?? channel.id) === 'chatgpt'
+          ? h(
+            'div',
+            { className: 'sc-panel' },
+            h('label', { className: 'sc-field' },
+              h('span', { className: 'sc-fieldLabel' }, t('accountName')),
+              h('input', {
+                className: 'sc-input',
+                value: accountLabel,
+                placeholder: t('accountNameHint'),
+                disabled: busy,
+                onChange: event => setAccountLabel(event.target.value),
+              }),
+            ),
+          )
+          : null,
         running
           ? h(
             'div',
@@ -1227,11 +1160,8 @@ window.__ModuleLoader__.load({
             }, t('retry')),
           )
           : null,
-        editing && channel.accounts !== undefined && channel.accounts.length > 0
-          ? h(AccountSection, { channel, t, onChanged: () => { void onChanged() } })
-          : null,
         editing && channel.linked === true
-          ? h(CatalogPanel, { channel, t, onSaved: () => { void onChanged() } })
+          ? h(CatalogPanel, { channel: { ...channel, id: channel.scope ?? channel.id }, t, onSaved: () => { void onChanged() } })
           : null,
       )
     }
@@ -1241,6 +1171,7 @@ window.__ModuleLoader__.load({
       const t = props.t
       const [open, setOpen] = React.useState(false)
       const [state, setState] = React.useState({ status: 'loading', channels: [] })
+      const [adding, setAdding] = React.useState(false)
 
       const refresh = React.useCallback(async () => {
         try {
@@ -1310,7 +1241,22 @@ window.__ModuleLoader__.load({
                   t,
                   onChanged: refresh,
                 })),
+                adding
+                  ? h(ChannelRow, {
+                    key: 'chatgpt-new',
+                    channel: { id: 'chatgpt-new', scope: 'chatgpt-new', channelId: 'chatgpt', name: t('newChatgptAccount'), linked: false },
+                    t,
+                    onChanged: async () => { setAdding(false); await refresh() },
+                  })
+                  : null,
               )
+              : null,
+            state.status === 'ready' && !adding
+              ? h('div', { className: 'sc-addRow' }, h('button', {
+                type: 'button',
+                className: 'sc-secondaryButton',
+                onClick: () => setAdding(true),
+              }, t('addAccount')))
               : null,
             h('p', { className: 'sc-foot' }, t('footnote')),
           )
@@ -1396,6 +1342,9 @@ window.__ModuleLoader__.load({
 .sc-modelCatalogHeading { display: flex; flex-direction: column; gap: 2px; }
 .sc-modelCatalogTitle { font-size: 12px; line-height: 18px; font-weight: 500; color: var(--dsw-alias-label-secondary); }
     .sc-accountPicker { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+    .sc-field { display: flex; flex-direction: column; gap: 4px; }
+    .sc-fieldLabel { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
+    .sc-addRow { display: flex; justify-content: flex-end; }
     .sc-accountRowWrap { display: flex; align-items: center; gap: 6px; }
     .sc-accountRow { flex: 1; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border: 0.5px solid var(--dsw-alias-border-l4, var(--dsw-alias-border-l1)); border-radius: var(--dsw-radius-md, 8px); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
     .sc-accountRow[data-selected='true'] { border-color: var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary)); }
@@ -1524,6 +1473,10 @@ window.__ModuleLoader__.load({
     }
   },
 })
+
+
+
+
 
 
 

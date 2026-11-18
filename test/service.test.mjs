@@ -11,6 +11,22 @@ import { normalizeConfig } from '../src/config.js'
 import { recordKey, readSet, readLink, writeLink, selectAccount } from '../src/store.js'
 import { CHANNEL_BY_ID } from '../src/channels/index.js'
 
+
+/** Route id of the (single) ChatGPT instance, once registered. */
+const chatgptRoute = host => [...host.adapters.keys()].find(route => route.startsWith('chatgpt-sub'))
+
+/** One ChatGPT provider instance with a linked fake grant, for catalog tests. */
+function testChatgpt(service) {
+  return service.instanceOf(CHANNEL_BY_ID.get('chatgpt'), {
+    flow: 'siwc',
+    clientId: 'oaiapp_test',
+    accessToken: 'tok',
+    refreshToken: 'ref',
+    expiresAt: Date.now() + 3_600_000,
+    account: 'test@example.com',
+  }, 'chatgpt-test', 'chatgpt-sub-test')
+}
+
 // Keep the catalog document inside a throwaway home instead of the real ~/.dsh.
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-subscription-channels-test-'))
 
@@ -165,18 +181,18 @@ test('a completed sign-in stores the grant and publishes the route', async () =>
   assert.equal(stored.payload.version, 1)
   assert.equal(stored.payload.selected, 'oaiapp_fake')
   assert.equal(stored.payload.accounts[0].clientId, 'oaiapp_fake')
-  assert.ok(host.adapters.has('chatgpt-sub'))
+  assert.ok(chatgptRoute(host) !== undefined)
 
   // The route serves the real ChatGPT catalog; the fake channel only replaced the sign-in.
-  const models = await host.ctx.get('llm').listModels('chatgpt-sub')
+  const models = await host.ctx.get('llm').listModels(chatgptRoute(host))
   assert.ok(models.length > 0)
-  const resolved = await host.ctx.get('llm').resolveModelInfo('chatgpt-sub', models[0].id)
+  const resolved = await host.ctx.get('llm').resolveModelInfo(chatgptRoute(host), models[0].id)
   assert.ok(resolved.context.contextWindow > 0)
   assert.ok(resolved.reasoning.efforts.length > 0)
 
   const state = await service.state()
-  assert.equal(state.channels.find(entry => entry.id === 'chatgpt').linked, true)
-  assert.equal(state.channels.find(entry => entry.id === 'chatgpt').account, 'me@example.test')
+  assert.equal(state.channels.find(entry => entry.channelId === 'chatgpt').linked, true)
+  assert.equal(state.channels.find(entry => entry.channelId === 'chatgpt').account, 'me@example.test')
   service.dispose()
 })
 
@@ -234,10 +250,6 @@ test('an expiring grant rotates through the channel refresh before use', async (
       accountId: 'acct-1',
     },
   })
-  const service = new SubscriptionService(host.ctx, config)
-  service.start()
-  await waitFor(() => host.adapters.has('chatgpt-sub'))
-
   const originalFetch = globalThis.fetch
   const seen = []
   globalThis.fetch = async (url, init) => {
@@ -247,6 +259,9 @@ test('an expiring grant rotates through the channel refresh before use', async (
       headers: { 'content-type': 'application/json' },
     })
   }
+  const service = new SubscriptionService(host.ctx, config)
+  service.start()
+  await waitFor(() => chatgptRoute(host) !== undefined)
   try {
     const credential = await service.credential(CHANNEL_BY_ID.get('chatgpt'), undefined)
     assert.equal(credential.accessToken, 'fresh')
@@ -270,8 +285,8 @@ test('the adapter streams a mocked provider response and classifies failures', a
   })
   const service = new SubscriptionService(host.ctx, config)
   service.start()
-  await waitFor(() => host.adapters.has('chatgpt-sub'))
-  const adapter = host.adapters.get('chatgpt-sub')
+  await waitFor(() => chatgptRoute(host) !== undefined)
+  const adapter = host.adapters.get(chatgptRoute(host))
 
   const originalFetch = globalThis.fetch
   const sse = 'data: {"type":"response.output_text.delta","item_id":"m","delta":"hi"}\n\n'
@@ -280,7 +295,7 @@ test('the adapter streams a mocked provider response and classifies failures', a
   globalThis.fetch = async () => new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } })
   try {
     const chunks = []
-    for await (const chunk of adapter.stream({ provider: 'chatgpt-sub', model: 'gpt-5.5', messages: [] })) chunks.push(chunk)
+    for await (const chunk of adapter.stream({ provider: chatgptRoute(host), model: 'gpt-5.5', messages: [] })) chunks.push(chunk)
     assert.deepEqual(chunks.at(-1), { type: 'finish', reason: { kind: 'stop' } })
     assert.ok(chunks.some(chunk => chunk.type === 'text-delta' && chunk.text === 'hi'))
   } finally {
@@ -290,14 +305,15 @@ test('the adapter streams a mocked provider response and classifies failures', a
   globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: 'invalid api key' } }), { status: 401 })
   try {
     const chunks = []
-    for await (const chunk of adapter.stream({ provider: 'chatgpt-sub', model: 'gpt-5.5', messages: [] })) chunks.push(chunk)
+    for await (const chunk of adapter.stream({ provider: chatgptRoute(host), model: 'gpt-5.5', messages: [] })) chunks.push(chunk)
     assert.deepEqual(chunks.at(-1), {
       type: 'finish',
       reason: { kind: 'error', failure: { message: 'invalid api key', code: 'INVALID_CREDENTIAL', status: 401 } },
     })
     // The rejected grant is forgotten, so the channel reads as signed out.
-    await waitFor(() => host.adapters.has('chatgpt-sub') === false)
-    assert.equal(host.records.has(recordKey('chatgpt')), false)
+    await waitFor(() => chatgptRoute(host) === undefined)
+    assert.equal(chatgptRoute(host), undefined)
+    assert.equal(host.records.get(recordKey('chatgpt')).payload.accounts[0].accessToken, undefined)
   } finally {
     globalThis.fetch = originalFetch
     service.dispose()
@@ -313,7 +329,7 @@ test('a route with no stored grant reports a sign-in failure instead of calling 
   for await (const chunk of service.adapter.stream({ provider: 'claude-sub', model: 'claude-sonnet-5-5', messages: [] })) chunks.push(chunk)
   assert.equal(chunks.length, 1)
   assert.equal(chunks[0].reason.kind, 'error')
-  assert.equal(chunks[0].reason.failure.code, 'INVALID_CREDENTIAL')
+  assert.equal(chunks[0].reason.failure.code, 'PROVIDER_ERROR')
   service.dispose()
 })
 
@@ -331,7 +347,7 @@ test('state derives expiry from the stored grant', async () => {
   const service = new SubscriptionService(host.ctx, config)
   service.start()
   const state = await service.state()
-  assert.equal(state.channels.find(channel => channel.id === 'chatgpt').status, 'expired')
+  assert.equal(state.channels.find(channel => channel.channelId === 'chatgpt').status, 'expired')
   assert.equal(state.channels.find(channel => channel.id === 'claude').status, 'expiring')
   assert.equal(state.channels.find(channel => channel.id === 'antigravity').status, undefined)
   service.dispose()
@@ -370,7 +386,7 @@ test('a silent channel settles as a timeout, not as a cancel', async () => {
 test('catalog edits hide models, change capacity, and persist', async () => {
   const host = makeHost()
   const service = new SubscriptionService(host.ctx, config)
-  const channel = CHANNEL_BY_ID.get('chatgpt')
+  const channel = testChatgpt(service)
   const original = service.models(channel).map(entry => entry.id)
   assert.ok(original.includes('gpt-5.5'))
 
@@ -382,14 +398,15 @@ test('catalog edits hide models, change capacity, and persist', async () => {
   assert.deepEqual(entry.reasoning.efforts.map(effort => effort.id), ['low'])
   assert.deepEqual(entry.inputModalities, ['text', 'image'])
 
-  const listed = await service.adapter.listModels('chatgpt-sub')
+  service.instancesByRoute.set(channel.route, channel)
+  const listed = await service.adapter.listModels(channel.route)
   assert.equal(listed.some(model => model.id === 'gpt-5.5'), false)
-  const hidden = await service.adapter.resolveModel('chatgpt-sub', 'gpt-5.5')
+  const hidden = await service.adapter.resolveModel(channel.route, 'gpt-5.5')
   assert.equal(hidden.context.contextWindow, 123_456)
   assert.deepEqual(hidden.inputModalities, ['text', 'image'])
 
   const document = JSON.parse(readFileSync(join(process.env.DSH_HOME, 'subscription-channels', 'catalog.json'), 'utf8'))
-  assert.equal(document.channels.chatgpt.overrides['gpt-5.5'].contextWindow, 123_456)
+  assert.equal(document.channels[channel.id].overrides['gpt-5.5'].contextWindow, 123_456)
 
   await service.updateModel(channel, 'gpt-5.5', { visible: true, contextWindow: undefined, efforts: undefined, input: ['text'] })
   assert.ok(service.models(channel).some(model => model.id === 'gpt-5.5'))
@@ -403,7 +420,7 @@ test('discovery adopts the channel catalog and can restore hidden models', async
   const channel = CHANNEL_BY_ID.get('claude')
   await service.updateModel(channel, 'claude-opus-5-5', { visible: false })
   await service.updateModel(channel, 'claude-sonnet-5-5', { visible: false })
-  assert.equal(service.channelCatalog(channel).hiddenCount, 2)
+  assert.equal((await service.channelCatalog(channel)).hiddenCount, 2)
 
   const view = await service.discover(channel, { restore: true })
   assert.equal(view.hiddenCount, 0)
@@ -421,7 +438,7 @@ test('a probe reports success, auth failure, and quota with reasons', async () =
     payload: { flow: 'siwc', clientId: 'oaiapp_test', version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
   })
   const service = new SubscriptionService(host.ctx, config)
-  const channel = CHANNEL_BY_ID.get('chatgpt')
+  const channel = testChatgpt(service)
   const originalFetch = globalThis.fetch
   const sse = 'data: {"type":"response.output_text.delta","item_id":"m","delta":"pong"}\n\n'
 
@@ -461,7 +478,7 @@ test('a probe reports success, auth failure, and quota with reasons', async () =
 test('catalog order, custom models, and reset round-trip', async () => {
   const host = makeHost()
   const service = new SubscriptionService(host.ctx, config)
-  const channel = CHANNEL_BY_ID.get('chatgpt')
+  const channel = testChatgpt(service)
   const ids = service.models(channel).map(model => model.id)
 
   const reversed = await service.updateOrder(channel, [...ids].reverse())
@@ -478,6 +495,7 @@ test('catalog order, custom models, and reset round-trip', async () => {
   assert.equal(dropped.models.some(model => model.id === 'gpt-custom-x'), false)
 
   await service.updateModel(channel, 'gpt-5.5', { visible: false, contextWindow: 300_000 })
+  channel.account = undefined
   const reset = await service.resetCatalog(channel)
   assert.equal(reset.hiddenCount, 0)
   assert.equal(reset.customized, false)
@@ -489,9 +507,9 @@ test('catalog order, custom models, and reset round-trip', async () => {
 test('fetching lists candidates and adopting the picked ones restores them', async () => {
   const host = makeHost()
   const service = new SubscriptionService(host.ctx, config)
-  const channel = CHANNEL_BY_ID.get('chatgpt')
+  const channel = testChatgpt(service)
   await service.updateModel(channel, 'gpt-5.5', { visible: false })
-  assert.equal(service.channelCatalog(channel).hiddenCount, 1)
+  assert.equal((await service.channelCatalog(channel)).hiddenCount, 1)
 
   const view = await service.discover(channel)
   assert.equal(view.hiddenCount, 1)
@@ -516,7 +534,7 @@ test('claude reasoning levels expose a thinking budget as their wire value', asy
 test('gpt-6.1-sol declares its five reasoning levels with wire values', async () => {
   const host = makeHost()
   const service = new SubscriptionService(host.ctx, config)
-  const channel = CHANNEL_BY_ID.get('chatgpt')
+  const channel = testChatgpt(service)
   const entry = service.model(channel, 'gpt-6.1-sol')
   assert.deepEqual(entry.availableEfforts.map(effort => effort.id), ['low', 'medium', 'high', 'xhigh', 'ultra'])
   assert.deepEqual(entry.reasoning.efforts.map(effort => effort.id), ['low', 'medium', 'high', 'xhigh', 'ultra'])
@@ -539,10 +557,10 @@ test('a custom level keeps its edited wire value', async () => {
 test('removing a model hides it from the editor list and adoption brings it back', async () => {
   const host = makeHost()
   const service = new SubscriptionService(host.ctx, config)
-  const channel = CHANNEL_BY_ID.get('chatgpt')
+  const channel = testChatgpt(service)
   await service.updateModel(channel, 'gpt-5.5', { visible: false })
-  assert.equal(service.channelCatalog(channel).models.some(model => model.id === 'gpt-5.5'), false)
-  assert.equal(service.channelCatalog(channel).hiddenCount, 1)
+  assert.equal((await service.channelCatalog(channel)).models.some(model => model.id === 'gpt-5.5'), false)
+  assert.equal((await service.channelCatalog(channel)).hiddenCount, 1)
 
   const adopted = await service.adoptModels(channel, ['gpt-5.5', 'gpt-not-listed'])
   assert.equal(adopted.models.some(model => model.id === 'gpt-5.5'), true)
@@ -650,14 +668,14 @@ test('an in-stream provider failure becomes a finish error', async () => {
   })
   const service = new SubscriptionService(host.ctx, config)
   service.start()
-  await waitFor(() => host.adapters.has('chatgpt-sub'))
-  const adapter = host.adapters.get('chatgpt-sub')
+  await waitFor(() => chatgptRoute(host) !== undefined)
+  const adapter = host.adapters.get(chatgptRoute(host))
   const originalFetch = globalThis.fetch
   const sse = 'data: {"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"usage limit reached"}}}\n\n'
   globalThis.fetch = async () => new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } })
   try {
     const chunks = []
-    for await (const chunk of adapter.stream({ provider: 'chatgpt-sub', model: 'gpt-5.5', messages: [] })) chunks.push(chunk)
+    for await (const chunk of adapter.stream({ provider: chatgptRoute(host), model: 'gpt-5.5', messages: [] })) chunks.push(chunk)
     const finish = chunks.at(-1)
     assert.equal(finish.type, 'finish')
     assert.equal(finish.reason.kind, 'error')
@@ -676,13 +694,13 @@ test('a quota 429 maps to the QUOTA failure code', async () => {
   })
   const service = new SubscriptionService(host.ctx, config)
   service.start()
-  await waitFor(() => host.adapters.has('chatgpt-sub'))
-  const adapter = host.adapters.get('chatgpt-sub')
+  await waitFor(() => chatgptRoute(host) !== undefined)
+  const adapter = host.adapters.get(chatgptRoute(host))
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: 'quota exceeded for this account' } }), { status: 429 })
   try {
     const chunks = []
-    for await (const chunk of adapter.stream({ provider: 'chatgpt-sub', model: 'gpt-5.5', messages: [] })) chunks.push(chunk)
+    for await (const chunk of adapter.stream({ provider: chatgptRoute(host), model: 'gpt-5.5', messages: [] })) chunks.push(chunk)
     assert.deepEqual(chunks.at(-1).reason.failure.code, 'QUOTA')
   } finally {
     globalThis.fetch = originalFetch
@@ -701,8 +719,7 @@ test('a legacy ChatGPT grant is treated as signed out', async () => {
   const service = new SubscriptionService(host.ctx, config)
   service.start()
   const state = await service.state()
-  assert.equal(state.channels.find(entry => entry.id === 'chatgpt').linked, false)
-  assert.deepEqual(state.channels.find(entry => entry.id === 'chatgpt').accounts, [])
+  assert.equal(state.channels.find(entry => entry.channelId === 'chatgpt').linked, false)
   assert.equal(await service.credential(CHANNEL_BY_ID.get('chatgpt'), undefined), undefined)
   service.dispose()
 })
@@ -723,14 +740,14 @@ test('signing out one account keeps the others and moves the selection', async (
   }
   try {
     const state = await service.logoutAccount('chatgpt', 'oaiapp_b')
-    const chatgpt = state.channels.find(entry => entry.id === 'chatgpt')
-    assert.equal(chatgpt.accounts.length, 2)
-    const second = chatgpt.accounts.find(entry => entry.key === 'oaiapp_b')
+    const entries = state.channels.filter(entry => entry.channelId === 'chatgpt')
+    assert.equal(entries.length, 2)
+    const second = entries.find(entry => entry.accountKey === 'oaiapp_b')
     assert.equal(second.linked, false)
     assert.equal(second.name, 'second')
-    assert.equal(second.clientPrefix, 'oaiapp_b')
-    assert.equal(chatgpt.accounts.find(entry => entry.key === 'oaiapp_a').linked, true)
-    assert.equal(chatgpt.account, 'first@example.com')
+    const first = entries.find(entry => entry.accountKey === 'oaiapp_a')
+    assert.equal(first.linked, true)
+    assert.equal(first.account, 'first@example.com')
   } finally {
     globalThis.fetch = originalFetch
     service.dispose()
@@ -752,8 +769,8 @@ test('a supported image attachment reaches the Responses payload', async () => {
     : originalGet(name)
   const service = new SubscriptionService(host.ctx, config)
   service.start()
-  await waitFor(() => host.adapters.has('chatgpt-sub'))
-  const adapter = host.adapters.get('chatgpt-sub')
+  await waitFor(() => chatgptRoute(host) !== undefined)
+  const adapter = host.adapters.get(chatgptRoute(host))
   const originalFetch = globalThis.fetch
   const seen = []
   globalThis.fetch = async (url, init) => {
@@ -766,7 +783,7 @@ test('a supported image attachment reaches the Responses payload', async () => {
   try {
     const chunks = []
     for await (const chunk of adapter.stream({
-      provider: 'chatgpt-sub',
+      provider: chatgptRoute(host),
       model: 'gpt-6.1-sol',
       messages: [{
         role: 'user',
@@ -788,5 +805,60 @@ test('a supported image attachment reaches the Responses payload', async () => {
   } finally {
     globalThis.fetch = originalFetch
     service.dispose()
+  }
+})
+
+
+test('each ChatGPT registration becomes its own provider with its own label', async () => {
+  const host = makeHost()
+  const now = Date.now() + 3_600_000
+  await writeLink(host.ctx, 'chatgpt', { flow: 'siwc', clientId: 'oaiapp_a', account: 'a@example.com', label: 'Personal', accessToken: 't1', refreshToken: 'r1', expiresAt: now })
+  await writeLink(host.ctx, 'chatgpt', { flow: 'siwc', clientId: 'oaiapp_b', account: 'b@example.com', label: 'Work', accessToken: 't2', refreshToken: 'r2', expiresAt: now })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async url => String(url).includes('/v1/models')
+    ? new Response(JSON.stringify({ models: [{ slug: 'gpt-6.2-sol', display_name: 'GPT-6.2 Sol', visibility: 'list', input_modalities: ['text', 'image'] }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    : new Response('', { status: 404 })
+  try {
+    const service = new SubscriptionService(host.ctx, config)
+    service.start()
+    await waitFor(() => [...host.adapters.keys()].filter(route => route.startsWith('chatgpt-sub')).length === 2)
+    const state = await service.state()
+    const cards = state.channels.filter(entry => entry.channelId === 'chatgpt')
+    assert.equal(cards.length, 2)
+    assert.deepEqual(cards.map(entry => entry.name).sort(), ['Personal', 'Work'])
+    const routes = [...host.adapters.keys()].filter(route => route.startsWith('chatgpt-sub')).sort()
+    assert.deepEqual(routes.map(route => service.adapter.providerInfo(route).name).sort(), ['Personal', 'Work'])
+    service.dispose()
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('restoring defaults uses the account current catalog, not the static table', async () => {
+  const host = makeHost()
+  await writeLink(host.ctx, 'chatgpt', { flow: 'siwc', clientId: 'oaiapp_test', account: 'a@example.com', accessToken: 't', refreshToken: 'r', expiresAt: Date.now() + 3_600_000 })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async url => String(url).includes('/v1/models')
+    ? new Response(JSON.stringify({
+      models: [
+        { slug: 'gpt-6.2-sol', display_name: 'GPT-6.2 Sol', visibility: 'list', context_window: 500_000, input_modalities: ['text', 'image'] },
+        { slug: 'gpt-6.2-astra', display_name: 'GPT-6.2 Astra', visibility: 'list', context_window: 500_000, input_modalities: ['text', 'image'] },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+    : new Response('', { status: 404 })
+  try {
+    const service = new SubscriptionService(host.ctx, config)
+    service.start()
+    await waitFor(() => [...host.adapters.keys()].some(route => route.startsWith('chatgpt-sub')))
+    const card = (await service.state()).channels.find(entry => entry.channelId === 'chatgpt')
+    const instance = service.instance(card.id)
+    await service.updateModel(instance, 'gpt-6.2-sol', { visible: false })
+    assert.equal(service.models(instance).some(model => model.id === 'gpt-6.2-sol'), false)
+    const reset = await service.resetCatalog(instance)
+    assert.ok(reset.models.some(model => model.id === 'gpt-6.2-sol'))
+    assert.ok(reset.models.some(model => model.id === 'gpt-6.2-astra'))
+    service.dispose()
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })

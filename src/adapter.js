@@ -1,12 +1,13 @@
 /**
- * One LLM adapter serving every linked subscription route.
+ * One LLM adapter serving every subscription provider instance.
  *
+ * Each ChatGPT registration is its own provider route, so the composer shows
+ * one group per account and switching groups never mixes two accounts' models.
  * The adapter is deliberately duck-typed: a profile-installed bundle cannot
  * import `@deepseek-ai/dsh-llm`, so it implements the documented surface
- * (`providerInfo`, `listModels`, `resolveModel`, `stream`) with plain objects
- * that satisfy the same shapes.
+ * (`providerInfo`, `listModels`, `resolveModel`, `prepareCall`, `stream`) with
+ * plain objects that satisfy the same shapes.
  */
-import { CHANNEL_BY_ROUTE } from './channels/index.js'
 
 /** Failure codes the harness retry policy understands. */
 const INVALID_CREDENTIAL = 'INVALID_CREDENTIAL'
@@ -28,6 +29,7 @@ export function providerFailure(status, body) {
     const quota = /quota|exceeded|limit reached|credits/iu.test(message)
     return { message, code: quota ? QUOTA : RATE_LIMIT, status }
   }
+  if (status === 503) return { message, code: PROVIDER_ERROR, status, retryable: true }
   return { message, code: PROVIDER_ERROR, status }
 }
 
@@ -43,16 +45,21 @@ function errorMessage(body) {
 
 export class SubscriptionAdapter {
   /**
-   * @param service - the subscription service owning credentials and channels.
+   * @param service - the subscription service owning credentials and instances.
    */
   constructor(service) {
     this.service = service
   }
 
-  /** Describe one linked route. */
+  /** Resolve the provider instance a route belongs to. */
+  instance(provider) {
+    return this.service.instancesByRoute.get(provider)
+  }
+
+  /** Describe one provider route; the name is the account's own label. */
   providerInfo(provider) {
-    const channel = CHANNEL_BY_ROUTE.get(provider)
-    return { id: provider, name: channel === undefined ? provider : this.service.label(channel) }
+    const instance = this.instance(provider)
+    return { id: provider, name: instance === undefined ? provider : this.service.label(instance) }
   }
 
   /** No provider-owned retry policy: the harness normal defaults apply. */
@@ -70,11 +77,11 @@ export class SubscriptionAdapter {
     return { width: image.width, height: image.height, maxBytes: image.bytes }
   }
 
-  /** Advertise the channel's visible models for one route. */
+  /** Advertise one account's visible models. */
   async listModels(provider) {
-    const channel = CHANNEL_BY_ROUTE.get(provider)
-    if (channel === undefined) return []
-    return this.service.models(channel).map(model => ({
+    const instance = this.instance(provider)
+    if (instance === undefined) return []
+    return this.service.models(instance).map(model => ({
       provider,
       id: model.id,
       name: model.name,
@@ -82,10 +89,10 @@ export class SubscriptionAdapter {
     }))
   }
 
-  /** Resolve one channel model's capacity, reasoning levels, and input types. */
+  /** Resolve one model's capacity, reasoning levels, and input types. */
   async resolveModel(provider, model) {
-    const channel = CHANNEL_BY_ROUTE.get(provider)
-    const entry = channel === undefined ? undefined : this.service.model(channel, model)
+    const instance = this.instance(provider)
+    const entry = instance === undefined ? undefined : this.service.model(instance, model)
     const base = { provider, id: model, name: entry?.name ?? model, inputModalities: entry?.inputModalities ?? ['text'] }
     if (entry === undefined) return base
     return {
@@ -103,30 +110,31 @@ export class SubscriptionAdapter {
   }
 
   /**
-   * Stream one request through its channel.
+   * Stream one request through its provider instance.
    * @param options - the harness request.
    * @returns chunks ending in exactly one terminal `finish`.
    */
   async *stream(options) {
-    const channel = CHANNEL_BY_ROUTE.get(options.provider)
-    if (channel === undefined) {
+    const instance = this.instance(options.provider)
+    if (instance === undefined) {
       yield { type: 'finish', reason: { kind: 'error', failure: { message: `unknown subscription route ${options.provider}`, code: PROVIDER_ERROR } } }
       return
     }
+    const channel = instance.channel
     let credential
     try {
-      credential = await this.service.credential(channel, options.signal)
+      credential = await this.service.credential(instance, options.signal)
     } catch (error) {
       yield { type: 'finish', reason: { kind: 'error', failure: { message: String(error?.message ?? error), code: INVALID_CREDENTIAL } } }
       return
     }
     if (credential === undefined) {
-      yield { type: 'finish', reason: { kind: 'error', failure: { message: `${this.service.label(channel)} is not signed in`, code: INVALID_CREDENTIAL } } }
+      yield { type: 'finish', reason: { kind: 'error', failure: { message: `${this.service.label(instance)} is not signed in`, code: INVALID_CREDENTIAL } } }
       return
     }
     let images
     try {
-      images = await this.service.imagesFor(channel, options, options.signal)
+      images = await this.service.imagesFor(instance, options, options.signal)
     } catch (_imagesUnavailable) {
       images = new Map()
     }
@@ -135,7 +143,7 @@ export class SubscriptionAdapter {
       const request = channel.buildRequest(options, credential, {
         ...this.service.requestContext(channel),
         images,
-        wireEffort: this.service.effortWire(channel, options.model, options.reasoningEffort),
+        wireEffort: this.service.effortWire(instance, options.model, options.reasoningEffort),
       })
       response = await fetch(request.url, {
         method: 'POST',
@@ -164,7 +172,7 @@ export class SubscriptionAdapter {
         body = undefined
       }
       const failure = providerFailure(response.status, body)
-      if (failure.code === INVALID_CREDENTIAL) this.service.invalidate(channel)
+      if (failure.code === INVALID_CREDENTIAL) await this.service.invalidate(instance)
       yield { type: 'finish', reason: { kind: 'error', failure } }
       return
     }
@@ -187,6 +195,3 @@ export class SubscriptionAdapter {
     }
   }
 }
-
-
-

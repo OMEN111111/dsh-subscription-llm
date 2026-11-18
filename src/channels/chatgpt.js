@@ -105,6 +105,7 @@ export function siwcAuthorizeUrl(request) {
  */
 async function loginSiwc(request) {
   const { interaction, signal, config, previous } = request
+  const requestedLabel = typeof request.label === 'string' && request.label.trim().length > 0 ? request.label.trim() : undefined
   const hostId = typeof config.hostId === 'string' && config.hostId.length > 0 ? config.hostId : undefined
   if (hostId === undefined) throw new Error(message(config.lang, 'siwcHostMissing'))
   const pkce = createPkce()
@@ -125,7 +126,7 @@ async function loginSiwc(request) {
     nonce,
     codeChallenge: pkce.challenge,
     hostId,
-    ...returningClientId === undefined ? { agentName: config.siwcAgentName } : {},
+    ...returningClientId === undefined ? { agentName: requestedLabel ?? config.siwcAgentName } : {},
     ...returningClientId === undefined ? {} : { idTokenHint: previous.idToken },
     ...returningClientId === undefined ? {} : { loginHint: previous.account },
   })
@@ -177,6 +178,7 @@ async function loginSiwc(request) {
     scope: token.scope ?? SIWC.scope,
     subject: typeof claims.sub === 'string' ? claims.sub : undefined,
     account: typeof claims.email === 'string' ? claims.email : undefined,
+    label: requestedLabel ?? previous?.label,
   }
 }
 
@@ -595,6 +597,7 @@ function mapUsage(usage) {
       : {}),
   }
 }
+
 
 
 
