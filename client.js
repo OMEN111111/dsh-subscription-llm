@@ -46,6 +46,7 @@ window.__ModuleLoader__.load({
       effortHigh: '高',
       effortXhigh: '极高',
       effortUltra: 'Ultra',
+      effortMax: 'Max',
       effortOff: '关闭',      catalog: '模型目录',
       catalogCustomized: '已自定义模型目录',
       resetCatalog: '恢复默认模型',
@@ -114,6 +115,7 @@ window.__ModuleLoader__.load({
       effortHigh: 'High',
       effortXhigh: 'Extra high',
       effortUltra: 'Ultra',
+      effortMax: 'Max',
       effortOff: 'Off',      catalog: 'Model catalog',
       catalogCustomized: 'Customized catalog',
       resetCatalog: 'Restore defaults',
@@ -309,7 +311,7 @@ window.__ModuleLoader__.load({
       const input = Array.isArray(model.inputModalities) ? model.inputModalities : ['text']
       const hasImage = input.includes('image')
       const hasText = input.includes('text')
-      const levelIds = [...new Set([...available.map(effort => effort.id), ...rows.map(row => row.id), 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra'])]
+      const levelIds = [...new Set([...available.map(effort => effort.id), ...rows.map(row => row.id), 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])]
       const defaultWire = (id) => available.find(effort => effort.id === id)?.wire ?? id
 
       const writeEfforts = (next) => { void patch({ efforts: next }) }
@@ -1522,6 +1524,7 @@ window.__ModuleLoader__.load({
     }
   },
 })
+
 
 
 

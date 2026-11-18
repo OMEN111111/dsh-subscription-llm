@@ -36,11 +36,11 @@ const USER_AGENT = 'deepseek-harness (+https://github.com/deepseek-ai/deepseek-h
 
 /** Model catalog advertised before the account is asked anything. */
 const MODELS = [
-  { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', contextWindow: 500_000, maxTokens: 128_000, efforts: ['low', 'medium', 'high'] },
-  { id: 'gpt-6-sol', name: 'GPT-6 Sol', contextWindow: 272_000, maxTokens: 128_000, efforts: ['low', 'medium', 'high'] },
-  { id: 'gpt-6-astra', name: 'GPT-6 Astra', contextWindow: 272_000, maxTokens: 128_000, efforts: ['low', 'medium', 'high'] },
-  { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', contextWindow: 272_000, maxTokens: 128_000, efforts: ['low', 'medium', 'high'] },
-  { id: 'gpt-5.5', name: 'GPT-5.5', contextWindow: 272_000, maxTokens: 128_000, efforts: ['low', 'medium', 'high'] },
+  { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', contextWindow: 500_000, maxTokens: 128_000, inputModalities: ['text', 'image'], efforts: ['low', 'medium', 'high'] },
+  { id: 'gpt-6-sol', name: 'GPT-6 Sol', contextWindow: 272_000, maxTokens: 128_000, inputModalities: ['text', 'image'], efforts: ['low', 'medium', 'high'] },
+  { id: 'gpt-6-astra', name: 'GPT-6 Astra', contextWindow: 272_000, maxTokens: 128_000, inputModalities: ['text', 'image'], efforts: ['low', 'medium', 'high'] },
+  { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', contextWindow: 272_000, maxTokens: 128_000, inputModalities: ['text', 'image'], efforts: ['low', 'medium', 'high'] },
+  { id: 'gpt-5.5', name: 'GPT-5.5', contextWindow: 272_000, maxTokens: 128_000, inputModalities: ['text', 'image'], efforts: ['low', 'medium', 'high'] },
   { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Codex Spark', contextWindow: 128_000, maxTokens: 128_000, efforts: ['low', 'medium', 'high'] },
 ]
 
@@ -50,6 +50,7 @@ const LEVELS = {
   medium: { id: 'medium', name: 'Medium', wire: 'medium' },
   high: { id: 'high', name: 'High', wire: 'high' },
   xhigh: { id: 'xhigh', name: 'Extra high', wire: 'xhigh' },
+  max: { id: 'max', name: 'Max', wire: 'max' },
   ultra: { id: 'ultra', name: 'Ultra', wire: 'ultra' },
 }
 
@@ -379,11 +380,21 @@ export default {
       .map((entry) => {
         const id = String(entry.slug ?? entry.id ?? '')
         const known = MODELS.find(model => model.id === id)
+        const levels = Array.isArray(entry.supported_reasoning_levels)
+          ? entry.supported_reasoning_levels
+            .map(level => String(level?.effort ?? ''))
+            .filter(effort => effort.length > 0)
+          : []
         return {
           id,
           name: String(entry.display_name ?? entry.name ?? id),
-          contextWindow: known?.contextWindow,
+          contextWindow: typeof entry.context_window === 'number' ? entry.context_window : known?.contextWindow,
           maxTokens: known?.maxTokens,
+          ...Array.isArray(entry.input_modalities)
+            ? { inputModalities: entry.input_modalities.map(value => String(value)).filter(value => value === 'text' || value === 'image') }
+            : known?.inputModalities === undefined ? {} : { inputModalities: known.inputModalities },
+          ...levels.length === 0 ? {} : { efforts: levels.map(effort => ({ id: effort, name: LEVELS[effort]?.name ?? effort })) },
+          ...typeof entry.default_reasoning_level === 'string' ? { defaultEffort: entry.default_reasoning_level } : {},
         }
       })
       .filter(entry => entry.id.length > 0)
@@ -581,3 +592,5 @@ function mapUsage(usage) {
       : {}),
   }
 }
+
+

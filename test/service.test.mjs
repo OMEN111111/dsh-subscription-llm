@@ -736,3 +736,57 @@ test('signing out one account keeps the others and moves the selection', async (
     service.dispose()
   }
 })
+
+test('a supported image attachment reaches the Responses payload', async () => {
+  const host = makeHost()
+  await writeLink(host.ctx, 'chatgpt', {
+    flow: 'siwc',
+    clientId: 'oaiapp_test',
+    accessToken: 'tok',
+    refreshToken: 'ref',
+    expiresAt: Date.now() + 3_600_000,
+  })
+  const originalGet = host.ctx.get.bind(host.ctx)
+  host.ctx.get = name => name === 'attachments'
+    ? { readImageRequest: async () => ({ mediaType: 'image/png', data: new Uint8Array([137, 80, 78, 71]) }) }
+    : originalGet(name)
+  const service = new SubscriptionService(host.ctx, config)
+  service.start()
+  await waitFor(() => host.adapters.has('chatgpt-sub'))
+  const adapter = host.adapters.get('chatgpt-sub')
+  const originalFetch = globalThis.fetch
+  const seen = []
+  globalThis.fetch = async (url, init) => {
+    seen.push(JSON.parse(String(init?.body ?? '{}')))
+    return new Response('data: {"type":"response.completed","response":{"status":"completed"}}\n\n', {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })
+  }
+  try {
+    const chunks = []
+    for await (const chunk of adapter.stream({
+      provider: 'chatgpt-sub',
+      model: 'gpt-6.1-sol',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'describe' },
+          {
+            type: 'image',
+            attachment: { attachmentId: 'att-1', mediaType: 'image/png', width: 256, height: 256, bytes: 4 },
+          },
+        ],
+      }],
+    })) chunks.push(chunk)
+    assert.equal(seen.length, 1)
+    const parts = seen[0].input[0].content
+    const image = parts.find(part => part.type === 'input_image')
+    assert.ok(image !== undefined)
+    assert.match(image.image_url, /^data:image\/png;base64,/u)
+    assert.equal(chunks.at(-1).type, 'finish')
+  } finally {
+    globalThis.fetch = originalFetch
+    service.dispose()
+  }
+})

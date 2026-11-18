@@ -398,3 +398,36 @@ test('siwc: the model listing maps slugs and drops hidden entries', async () => 
 
 
 
+
+test('chatgpt: vision models declare image input', () => {
+  const info = chatgpt.modelInfo('gpt-6.1-sol')
+  assert.ok(info.inputModalities.includes('image'))
+  const textOnly = chatgpt.modelInfo('gpt-5.3-codex-spark')
+  assert.equal(textOnly.inputModalities, undefined)
+})
+
+test('siwc: model discovery carries modalities, levels and context', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    models: [{
+      slug: 'gpt-6.2-sol',
+      display_name: 'GPT-6.2 Sol',
+      visibility: 'list',
+      context_window: 500_000,
+      input_modalities: ['text', 'image', 'audio'],
+      supported_reasoning_levels: [
+        { effort: 'low' }, { effort: 'medium' }, { effort: 'high' }, { effort: 'xhigh' }, { effort: 'ultra' },
+      ],
+      default_reasoning_level: 'low',
+    }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } })
+  try {
+    const models = await chatgpt.discoverModels(siwcCredential, config)
+    assert.equal(models[0].contextWindow, 500_000)
+    assert.deepEqual(models[0].inputModalities, ['text', 'image'])
+    assert.deepEqual(models[0].efforts.map(effort => effort.id), ['low', 'medium', 'high', 'xhigh', 'ultra'])
+    assert.equal(models[0].defaultEffort, 'low')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

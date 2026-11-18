@@ -127,7 +127,7 @@ export class SubscriptionService {
       const override = stored.overrides[model.id] !== null && typeof stored.overrides[model.id] === 'object' ? stored.overrides[model.id] : {}
       const info = channel.modelInfo?.(model.id)
       const template = info ?? model
-      const available = (info?.reasoning?.efforts ?? channel.reasoningEfforts ?? []).map(effort => ({
+      const available = (info?.reasoning?.efforts ?? (Array.isArray(model.efforts) && model.efforts.length > 0 ? model.efforts : channel.reasoningEfforts) ?? []).map(effort => ({
         id: effort.id,
         name: effort.name ?? effort.id,
         wire: typeof effort.wire === 'string' ? effort.wire : (channel.wireValue?.(effort.id) ?? effort.id),
@@ -149,10 +149,13 @@ export class SubscriptionService {
         : available
       const defaultEffort = typeof override.defaultEffort === 'string' && chosen.some(effort => effort.id === override.defaultEffort)
         ? override.defaultEffort
-        : chosen.some(effort => effort.id === template?.reasoning?.defaultEffort)
-          ? template.reasoning.defaultEffort
+        : chosen.some(effort => effort.id === (template?.reasoning?.defaultEffort ?? model.defaultEffort))
+          ? (template?.reasoning?.defaultEffort ?? model.defaultEffort)
           : chosen[0]?.id
-      const input = Array.isArray(override.input) && override.input.includes('image') ? ['text', 'image'] : ['text']
+      const acceptsImage = info?.inputModalities?.includes('image') === true || (Array.isArray(model.inputModalities) && model.inputModalities.includes('image'))
+      const input = Array.isArray(override.input)
+        ? (override.input.includes('image') ? ['text', 'image'] : ['text'])
+        : acceptsImage ? ['text', 'image'] : ['text']
       return {
         id: model.id,
         name: typeof override.name === 'string' && override.name.trim().length > 0 ? override.name.trim() : (model.name ?? model.id),
@@ -353,7 +356,11 @@ export class SubscriptionService {
     }
     if ('input' in patch) {
       const list = Array.isArray(patch.input) ? patch.input.filter(value => value === 'text' || value === 'image') : ['text']
+      const supportsImage = this.model(channel, modelId)?.inputModalities?.includes('image') === true
       if (list.includes('image')) next.input = ['text', 'image']
+      // A text-only override on a vision model must be stored, because the
+      // model's own default now includes images.
+      else if (supportsImage) next.input = ['text']
       else delete next.input
     }
     stored.overrides[modelId] = next
@@ -385,6 +392,9 @@ export class SubscriptionService {
       name: typeof model.name === 'string' ? model.name : String(model.id),
       ...positiveInt(model.contextWindow) === undefined ? {} : { contextWindow: positiveInt(model.contextWindow) },
       ...positiveInt(model.maxTokens) === undefined ? {} : { maxTokens: positiveInt(model.maxTokens) },
+      ...Array.isArray(model.inputModalities) && model.inputModalities.length > 0 ? { inputModalities: model.inputModalities } : {},
+      ...Array.isArray(model.efforts) && model.efforts.length > 0 ? { efforts: model.efforts.map(entry => ({ id: String(entry.id), name: String(entry.name ?? entry.id) })) } : {},
+      ...typeof model.defaultEffort === 'string' ? { defaultEffort: model.defaultEffort } : {},
       ...typeof model.effort === 'string' ? { effort: model.effort } : {},
       ...typeof model.family === 'string' ? { family: model.family } : {},
     }))
@@ -663,6 +673,9 @@ export class SubscriptionService {
         name: typeof model.name === 'string' ? model.name : String(model.id),
         ...positiveInt(model.contextWindow) === undefined ? {} : { contextWindow: positiveInt(model.contextWindow) },
         ...positiveInt(model.maxTokens) === undefined ? {} : { maxTokens: positiveInt(model.maxTokens) },
+        ...Array.isArray(model.inputModalities) && model.inputModalities.length > 0 ? { inputModalities: model.inputModalities } : {},
+        ...Array.isArray(model.efforts) && model.efforts.length > 0 ? { efforts: model.efforts.map(entry => ({ id: String(entry.id), name: String(entry.name ?? entry.id) })) } : {},
+        ...typeof model.defaultEffort === 'string' ? { defaultEffort: model.defaultEffort } : {},
         ...typeof model.effort === 'string' ? { effort: model.effort } : {},
         ...typeof model.family === 'string' ? { family: model.family } : {},
       }))
@@ -1022,6 +1035,7 @@ export class SubscriptionService {
     this.routes.clear()
   }
 }
+
 
 
 
