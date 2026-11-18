@@ -90,6 +90,8 @@ dsh plugin --profile <你的 profile 名> add github:OMEN111111/dsh-subscription
   name: 'dsh-subscription-channels'
   config:
     lang: zh                       # 提供商显示名与提示语言：zh / en
+    chatgptFlow: siwc              # ChatGPT 登录流程：siwc（官方，默认）/ codex（旧流程，显式回退）
+    siwcAgentName: DeepSeek Harness # 官方授权页展示的应用名
     openBrowser: true              # 无头环境设为 false，改为手动打开卡片里的链接
     originator: codex_cli_rs       # 发给 ChatGPT 后端的 originator
     antigravityHost: https://daily-cloudcode-pa.googleapis.com
@@ -130,7 +132,7 @@ export const CLIENT_SECRET = '<the antigravity client secret>'
 
 ## 测试
 
-仓库带有 32 项单元/集成测试，覆盖三条线路的流解析与请求体构造、图片序列化、令牌轮换、路由同步、超时结算、目录覆盖与可见性、检测结果分类：
+仓库带有 41 项单元/集成测试，覆盖三条线路的流解析与请求体构造、图片序列化、令牌轮换、路由同步、超时结算、目录覆盖与可见性、检测结果分类：
 
 ```bash
 npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
@@ -147,6 +149,7 @@ npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
 
 ## 版本
 
+- **v0.2.2**：ChatGPT 渠道改用官方 **Sign in with ChatGPT**（动态注册、ID Token 验签、计划权限校验、/v1/responses 契约、刷新轮换与撤销）；模型目录改由 /v1/models 提供；保留 chatgptFlow: codex 显式回退。
 - **v0.2.1**：渠道目录收进「编辑」；获取可用模型 改为弹窗选择；删除即时生效；推理档位按模型真实支持并支持自定义 API 参数值；修复 Windows 打开登录页时 URL 被 & 截断导致 missing_required_parameter / 缺少 client_id；去掉与退出登录重复的「重新登录」。
 - **v0.2.0**：新增模型目录（删除 / 恢复 / 排序 / 添加模型 / 获取可用模型）、逐模型检测与失败原因、逐模型自定义（上下文窗口、最大输出、推理等级、输入类型），并支持图片输入；界面与 DSH 自带模型编辑面板一致。
 - **v0.1.0**：首个版本。三个渠道的登录、模型注册、退出登录、错误处理与中英文文案。
@@ -158,6 +161,7 @@ npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
 ---
 
 **English**: A DeepSeek Harness plugin that adds a *subscription channels* entry to Settings → Models, letting you sign in to existing ChatGPT, Google Antigravity, or Claude subscriptions (OAuth + PKCE, credentials in the local DSH store) and use their models directly. Unofficial upstream endpoints; text and tool calls only; MIT licensed.
+
 
 
 

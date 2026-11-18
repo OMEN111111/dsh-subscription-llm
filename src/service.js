@@ -48,6 +48,13 @@ export class SubscriptionService {
     /** Durable per-channel catalog: visibility, per-model overrides, last discovery. */
     this.catalogPath = catalogPath(ctx)
     this.catalog = readCatalog(this.catalogPath)
+    // One stable host id per installation: the official sign-in binds ChatGPT
+    // plan usage to a host separately from the issued client id.
+    if (typeof this.catalog.hostId !== 'string' || this.catalog.hostId.length === 0) {
+      this.catalog.hostId = `urn:uuid:${randomUUID()}`
+      void this.persistCatalog()
+    }
+    this.config.hostId = this.catalog.hostId
     /** The injected LLM registry; optional services are read lazily, never as properties. */
     this.llm = ctx.get('llm')
     this.flowsFor = undefined
@@ -528,6 +535,7 @@ export class SubscriptionService {
             },
             signal: session.signal,
             config: this.config,
+            previous: await readLink(this.ctx, channel.id),
           })
           await session.commit({ kind: 'grant', payload: { ...payload, version: PAYLOAD_VERSION } })
           this.registerRoute(channel)
@@ -783,7 +791,12 @@ export class SubscriptionService {
   async authorize(channel, interaction, signal) {
     const authorization = this.ctx.get('authorization')
     if (authorization === undefined) {
-      return channel.login({ interaction, signal, config: this.config })
+      return channel.login({
+        interaction,
+        signal,
+        config: this.config,
+        previous: await readLink(this.ctx, channel.id),
+      })
     }
     const outcome = await authorization.begin({
       key: recordKey(channel.id),
@@ -855,6 +868,16 @@ export class SubscriptionService {
     if (channel === undefined) throw new Error(`unknown subscription channel "${String(channelId)}"`)
     const running = this.active.get(channel.id)
     if (running !== undefined) this.cancel(running.id)
+    const link = await readLink(this.ctx, channel.id)
+    if (link !== undefined && typeof channel.revoke === 'function') {
+      try {
+        await channel.revoke(link, this.config)
+      } catch (error) {
+        // Local credentials are still removed; the log records the unconfirmed
+        // remote revocation so the user can disconnect the app in ChatGPT.
+        this.ctx.logger.info('subscription-channels: revocation for %s failed: %s', channel.id, String(error?.message ?? error))
+      }
+    }
     await clearLink(this.ctx, channel.id)
     await this.dropRoute(channel)
     delete this.catalog.channels[channel.id]

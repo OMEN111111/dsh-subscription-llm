@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import chatgpt from '../src/channels/chatgpt.js'
+import chatgpt, { siwcAuthorizeUrl } from '../src/channels/chatgpt.js'
 import claude from '../src/channels/claude.js'
 import antigravity from '../src/channels/antigravity.js'
 
@@ -274,5 +274,137 @@ test('antigravity: a user image becomes an inlineData part', () => {
   const request = antigravity.buildRequest({ provider: 'google-antigravity', model: 'gemini-4-argon-high', messages: imageMessages }, credential, imageContext)
   const user = request.body.request.contents[0]
   assert.deepEqual(user.parts[1], { inlineData: { mimeType: 'image/png', data: 'AAAA' } })
+})
+
+
+const siwcCredential = { flow: 'siwc', accessToken: 'siwc-token', refreshToken: 'siwc-refresh', clientId: 'oaiapp_example', expiresAt: Date.now() + 3_600_000 }
+
+test('siwc: the authorization URL carries the documented parameters', () => {
+  const url = new URL(siwcAuthorizeUrl({
+    clientId: 'dynamic_agent_client',
+    redirectUri: 'http://127.0.0.1:1455/auth/callback',
+    state: 'state-1',
+    nonce: 'nonce-1',
+    codeChallenge: 'challenge-1',
+    hostId: 'urn:uuid:host-1',
+    agentName: 'DeepSeek Harness',
+  }))
+  assert.equal(url.origin + url.pathname, 'https://auth.openai.com/api/accounts/authorize')
+  const params = url.searchParams
+  assert.equal(params.get('client_id'), 'dynamic_agent_client')
+  assert.equal(params.get('response_type'), 'code')
+  assert.equal(params.get('redirect_uri'), 'http://127.0.0.1:1455/auth/callback')
+  assert.equal(params.get('resource'), 'https://api.openai.com/v1')
+  assert.equal(params.get('state'), 'state-1')
+  assert.equal(params.get('nonce'), 'nonce-1')
+  assert.equal(params.get('code_challenge'), 'challenge-1')
+  assert.equal(params.get('code_challenge_method'), 'S256')
+  assert.equal(params.get('ext_agent_host_id'), 'urn:uuid:host-1')
+  assert.equal(params.get('agent_name_hint'), 'DeepSeek Harness')
+  assert.match(params.get('scope'), /chatgpt\.tokens\.use\.direct/u)
+  assert.match(params.get('scope'), /resource\.invoke/u)
+})
+
+test('siwc: a returning sign-in reuses its client id and adds hints', () => {
+  const url = new URL(siwcAuthorizeUrl({
+    clientId: 'oaiapp_saved',
+    redirectUri: 'http://127.0.0.1:1455/auth/callback',
+    state: 's',
+    nonce: 'n',
+    codeChallenge: 'c',
+    hostId: 'urn:uuid:host-1',
+    idTokenHint: 'id-token',
+    loginHint: 'person@example.com',
+  }))
+  assert.equal(url.searchParams.get('client_id'), 'oaiapp_saved')
+  assert.equal(url.searchParams.has('agent_name_hint'), false)
+  assert.equal(url.searchParams.get('id_token_hint'), 'id-token')
+  assert.equal(url.searchParams.get('login_hint'), 'person@example.com')
+})
+
+test('siwc: requests go to the public Responses API with the documented body', () => {
+  const options = {
+    provider: 'chatgpt-sub',
+    model: 'gpt-6.1-sol',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    reasoningEffort: 'xhigh',
+    temperature: 0.9,
+    tools: [{ name: 'bash', description: 'run', parameters: { type: 'object', properties: {} } }],
+  }
+  const request = chatgpt.buildRequest(options, siwcCredential, { config, wireEffort: 'xhigh', images: new Map() })
+  assert.equal(request.url, 'https://api.openai.com/v1/responses')
+  assert.equal(request.headers.authorization, 'Bearer siwc-token')
+  assert.equal(request.headers['chatgpt-account-id'], undefined)
+  assert.equal(request.headers.originator, undefined)
+  assert.equal(request.body.store, false)
+  assert.equal(request.body.stream, true)
+  assert.equal(request.body.temperature, undefined)
+  assert.equal(request.body.text, undefined)
+  assert.equal(request.body.prompt_cache_key, undefined)
+  assert.equal(request.body.max_output_tokens, undefined)
+  assert.deepEqual(request.body.reasoning, { effort: 'xhigh', summary: 'auto' })
+  assert.deepEqual(request.body.tools.map(tool => tool.type), ['function'])
+})
+
+test('codex: a legacy grant keeps the ChatGPT backend route', () => {
+  const legacy = { flow: 'codex', accessToken: 'codex-token', accountId: 'acct', refreshToken: 'r', expiresAt: Date.now() + 3_600_000 }
+  const request = chatgpt.buildRequest(
+    { provider: 'chatgpt-sub', model: 'gpt-5.5', messages: [], sessionId: 'session-1' },
+    legacy,
+    { config, wireEffort: 'high', images: new Map() },
+  )
+  assert.equal(request.url, 'https://chatgpt.com/backend-api/codex/responses')
+  assert.equal(request.headers['chatgpt-account-id'], 'acct')
+  assert.equal(request.headers['session-id'], 'session-1')
+  assert.equal(request.body.store, false)
+  assert.deepEqual(request.body.text, { verbosity: 'low' })
+})
+
+test('siwc: refresh sends the issued client id and resource', async () => {
+  const originalFetch = globalThis.fetch
+  let seen
+  globalThis.fetch = async (url, init) => {
+    seen = { url: String(url), body: String(init?.body ?? '') }
+    return new Response(JSON.stringify({ access_token: 'fresh', refresh_token: 'rotate', expires_in: 3600 }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    const next = await chatgpt.refresh(siwcCredential, config)
+    assert.match(seen.url, /\/api\/accounts\/oauth\/token$/u)
+    assert.match(seen.body, /grant_type=refresh_token/u)
+    assert.match(seen.body, /client_id=oaiapp_example/u)
+    assert.match(seen.body, /resource=https%3A%2F%2Fapi\.openai\.com%2Fv1/u)
+    assert.equal(next.accessToken, 'fresh')
+    assert.equal(next.refreshToken, 'rotate')
+    assert.equal(next.clientId, 'oaiapp_example')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('siwc: the model listing maps slugs and drops hidden entries', async () => {
+  const originalFetch = globalThis.fetch
+  let seenUrl
+  globalThis.fetch = async (url) => {
+    seenUrl = String(url)
+    return new Response(JSON.stringify({
+      models: [
+        { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1 Sol', visibility: 'list' },
+        { slug: 'internal-only', display_name: 'Hidden', visibility: 'hidden' },
+        { slug: 'gpt-experimental-x' },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    const models = await chatgpt.discoverModels(siwcCredential, config)
+    assert.equal(seenUrl, 'https://api.openai.com/v1/models')
+    assert.deepEqual(models.map(model => model.id), ['gpt-6.1-sol', 'gpt-experimental-x'])
+    assert.equal(models[0].contextWindow, 500_000)
+    assert.equal(models[1].name, 'gpt-experimental-x')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 

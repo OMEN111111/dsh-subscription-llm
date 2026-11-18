@@ -24,6 +24,8 @@ const TABLE = {
     testNetwork: '网络错误',
     testRejected: '上游拒绝请求',
     testCancelled: '检测已取消',
+    siwcHostMissing: '这台机器还没有 Sign in with ChatGPT 的主机标识，请重启 DSH 后重试。',
+    siwcPlanRequired: '该账号没有授权使用 ChatGPT 计划额度（缺少 chatgpt.tokens.use.direct 权限），请在授权页勾选使用 ChatGPT 计划。',
     antigravityNeedsSecret: 'Google Antigravity 登录需要 OAuth 客户端密钥：请在插件配置里填 googleClientSecret，或设置环境变量 DSH_ANTIGRAVITY_CLIENT_SECRET。',
     antigravityOnboard: '正在为该账号开通 Antigravity 项目（可能需要几秒钟）…',
     antigravityFallback: 'Cloud Code 项目查询失败（%ERROR%），改用文档中的默认项目。',
@@ -52,6 +54,8 @@ const TABLE = {
     testNetwork: 'Network error',
     testRejected: 'The provider rejected the request',
     testCancelled: 'Probe cancelled',
+    siwcHostMissing: 'This host has no Sign in with ChatGPT host id yet; restart DSH and try again.',
+    siwcPlanRequired: 'The account did not grant ChatGPT plan usage (chatgpt.tokens.use.direct), so this sign-in cannot pay with the plan.',
     antigravityNeedsSecret: 'Antigravity sign-in needs the OAuth client secret: set googleClientSecret in the plugin config, or the DSH_ANTIGRAVITY_CLIENT_SECRET environment variable.',
     antigravityOnboard: 'Provisioning the Antigravity project for this account (this can take a few seconds)…',
     antigravityFallback: 'Cloud Code project lookup failed (%ERROR%); using the documented fallback project.',
@@ -72,6 +76,7 @@ export function message(lang, key, values = {}) {
   if (template === undefined) return key
   return template.replace(/%([A-Z_]+)%/gu, (_match, name) => String(values[name] ?? name))
 }
+
 
 
 

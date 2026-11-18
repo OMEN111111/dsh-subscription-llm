@@ -6,7 +6,7 @@
 
 | 渠道 | 登录方式 | 使用的能力 |
 | --- | --- | --- |
-| ChatGPT 订阅（Codex） | 浏览器 OAuth（PKCE，回环回调） | 账号内的 Codex / GPT 系列模型 |
+| ChatGPT 订阅 | 官方 Sign in with ChatGPT（动态注册 + PKCE） | 账号内 isibility: list 的模型；计划额度由授权页决定 |
 | Google Antigravity | 浏览器 OAuth（PKCE，回环回调或粘贴授权码） | Antigravity 账号内的模型 |
 | Claude 订阅（Pro / Max） | 浏览器 OAuth（PKCE）或粘贴授权码 | 账号内的 Claude 系列模型 |
 
@@ -33,6 +33,7 @@
 - Google Antigravity 的 OAuth client secret 不在本插件里分发，需通过 googleClientSecret 配置或 DSH_ANTIGRAVITY_CLIENT_SECRET 环境变量提供，详见仓库 README。
 - 图片输入只在把模型输入类型勾选「图片」后转发；文件附件仍不转发。
 - 登录需要本机浏览器；如果在无图形界面的环境里使用，请选择「粘贴授权码」方式。
+
 
 
 

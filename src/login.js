@@ -9,7 +9,7 @@ import { message } from './copy.js'
  * Accept every shape a user might paste: a full redirect URL, `code#state`, a
  * bare query string, or the bare code.
  * @param input - pasted text.
- * @returns the code and state it carried, when present.
+ * @returns the code, state, and issued client id it carried, when present.
  */
 export function parseAuthorizationInput(input) {
   const value = String(input ?? '').trim()
@@ -19,6 +19,7 @@ export function parseAuthorizationInput(input) {
     return {
       code: url.searchParams.get('code') ?? undefined,
       state: url.searchParams.get('state') ?? undefined,
+      clientId: url.searchParams.get('client_id') ?? undefined,
     }
   } catch (_notAUrl) {
     /* fall through to the compact forms */
@@ -29,19 +30,24 @@ export function parseAuthorizationInput(input) {
   }
   if (value.includes('code=')) {
     const params = new URLSearchParams(value.startsWith('?') ? value.slice(1) : value)
-    return { code: params.get('code') ?? undefined, state: params.get('state') ?? undefined }
+    return {
+      code: params.get('code') ?? undefined,
+      state: params.get('state') ?? undefined,
+      clientId: params.get('client_id') ?? undefined,
+    }
   }
   return { code: value }
 }
 
 /**
- * Wait for the provider's redirect: whichever arrives first, the loopback
- * callback or a pasted value. A failed listener just leaves the paste field.
+ * Wait for the provider's redirect and return every parameter it carried:
+ * whichever arrives first, the loopback callback or a pasted value. A failed
+ * listener just leaves the paste field.
  * @param options - prompt wording, the listener, state to verify, cancellation.
- * @returns the authorization code.
+ * @returns the authorization callback parameters, always with a `code`.
  * @throws when the user's cancellation or a rejected answer ends the attempt.
  */
-export async function waitForCode(options) {
+export async function waitForParams(options) {
   const { interaction, loopback, signal, message: promptText, placeholder, state, lang } = options
   const entries = []
   if (loopback !== undefined) {
@@ -105,9 +111,20 @@ export async function waitForCode(options) {
       ask()
       continue
     }
-    return params.code
+    return params
   }
   throw new Error('sign-in cancelled')
+}
+
+/**
+ * Wait for the provider's redirect and return just the authorization code.
+ * @param options - prompt wording, the listener, state to verify, cancellation.
+ * @returns the authorization code.
+ * @throws when the user's cancellation or a rejected answer ends the attempt.
+ */
+export async function waitForCode(options) {
+  const params = await waitForParams(options)
+  return params.code
 }
 
 /**
@@ -128,4 +145,3 @@ export function decodeJwt(token) {
     return undefined
   }
 }
-

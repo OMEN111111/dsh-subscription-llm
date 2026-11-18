@@ -77,7 +77,11 @@ export function readCatalog(path) {
       }
     }
   }
-  return { version: CATALOG_VERSION, channels }
+  return {
+    version: CATALOG_VERSION,
+    channels,
+    ...typeof parsed.hostId === 'string' && parsed.hostId.length > 0 ? { hostId: parsed.hostId } : {},
+  }
 }
 
 /**
@@ -101,4 +105,5 @@ export function writeCatalog(path, catalog) {
 function isModel(value) {
   return value !== null && typeof value === 'object' && typeof value.id === 'string' && value.id.length > 0
 }
+
 
