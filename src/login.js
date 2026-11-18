@@ -54,7 +54,7 @@ export async function waitForParams(options) {
     entries.push({
       source: 'callback',
       promise: loopback.wait(signal).then(
-        params => ({ ok: true, params }),
+        params => ({ ok: true, params: normalizeCallbackParams(params) }),
         error => ({ ok: false, error }),
       ),
     })
@@ -114,6 +114,22 @@ export async function waitForParams(options) {
     return params
   }
   throw new Error('sign-in cancelled')
+}
+
+/**
+ * Normalize one provider callback into the shape the flows read.
+ *
+ * A loopback callback carries raw query keys (`client_id`, `code`, `state`),
+ * while a pasted callback is parsed by {@link parseAuthorizationInput}. Both
+ * must expose the issued client id as `clientId`, otherwise a new registration
+ * looks like it never received one.
+ * @param params - raw callback parameters.
+ * @returns the normalized parameters.
+ */
+function normalizeCallbackParams(params) {
+  if (params === null || typeof params !== 'object') return {}
+  const { client_id: clientId, ...rest } = params
+  return clientId === undefined ? rest : { ...rest, clientId }
 }
 
 /**

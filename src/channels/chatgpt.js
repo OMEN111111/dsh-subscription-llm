@@ -145,7 +145,10 @@ async function loginSiwc(request) {
   } finally {
     loopback.close()
   }
-  const clientId = typeof params.clientId === 'string' && params.clientId.length > 0 ? params.clientId : returningClientId
+  const issuedClientId = typeof params.clientId === 'string' && params.clientId.length > 0
+    ? params.clientId
+    : typeof params.client_id === 'string' && params.client_id.length > 0 ? params.client_id : undefined
+  const clientId = issuedClientId ?? returningClientId
   if (clientId === undefined) throw new Error('the sign-in callback carried no issued client id')
   const token = await postForm(SIWC.tokenUrl, {
     grant_type: 'authorization_code',
@@ -592,5 +595,6 @@ function mapUsage(usage) {
       : {}),
   }
 }
+
 
 
