@@ -606,3 +606,35 @@ test('signing out keeps the ChatGPT registration, host identity, and other accou
   assert.equal(set.selected, 'oaiapp_a')
 })
 
+
+test('concurrent requests share one token refresh', async () => {
+  const host = makeHost()
+  await writeLink(host.ctx, 'chatgpt', {
+    flow: 'codex',
+    accessToken: 'stale',
+    refreshToken: 'refresh-1',
+    expiresAt: Date.now() - 1000,
+    accountId: 'acct',
+  })
+  const service = new SubscriptionService(host.ctx, config)
+  let calls = 0
+  const channel = {
+    id: 'chatgpt',
+    async refresh() {
+      calls += 1
+      await new Promise(resolve => setTimeout(resolve, 40))
+      return { flow: 'codex', accessToken: 'fresh', refreshToken: 'refresh-2', expiresAt: Date.now() + 3_600_000, accountId: 'acct' }
+    },
+  }
+  const results = await Promise.all([
+    service.credential(channel),
+    service.credential(channel),
+    service.credential(channel),
+  ])
+  assert.equal(calls, 1)
+  assert.ok(results.every(grant => grant.accessToken === 'fresh'))
+  const stored = (await readSet(host.ctx, 'chatgpt')).accounts[0]
+  assert.equal(stored.accessToken, 'fresh')
+  assert.equal(stored.refreshToken, 'refresh-2')
+  service.dispose()
+})

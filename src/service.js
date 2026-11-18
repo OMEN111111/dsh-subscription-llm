@@ -45,6 +45,8 @@ export class SubscriptionService {
     this.active = new Map()
     /** channel ids whose next sign-in must register a new client instead of reusing one */
     this.forceNewAccount = new Set()
+    /** `channel:clientId` -> the refresh attempt other callers await */
+    this.refreshing = new Map()
     /** channel id -> adapter registration handle */
     this.routes = new Map()
     /** Durable per-channel catalog: visibility, per-model overrides, last discovery. */
@@ -560,6 +562,12 @@ export class SubscriptionService {
 
   /**
    * Read one channel's grant, rotating it when it is close to expiry.
+   *
+   * Concurrent callers for the same registration share one refresh attempt:
+   * OpenAI rotates the refresh token, so two parallel refreshes would race and
+   * the loser would persist a token the issuer already invalidated. The first
+   * caller starts the exchange; everyone else awaits it and then uses the
+   * rotated grant this call already wrote.
    * @param channel - channel module.
    * @param signal - request cancellation.
    * @returns the grant, or undefined when the channel is not signed in.
@@ -569,11 +577,28 @@ export class SubscriptionService {
     if (link === undefined) return undefined
     if (isFresh(link)) return link
     if (typeof link.refreshToken !== 'string' || link.refreshToken.length === 0) return link
+    const key = `${channel.id}:${accountKey(link)}`
+    let pending = this.refreshing.get(key)
+    if (pending === undefined) {
+      pending = (async () => {
+        try {
+          // Another process may have rotated the grant while this one waited.
+          const current = await readLink(this.ctx, channel.id)
+          const base = current !== undefined && accountKey(current) === accountKey(link) ? current : link
+          if (isFresh(base)) return base
+          const next = await channel.refresh(base, this.config)
+          await writeLink(this.ctx, channel.id, next)
+          return { ...next, version: PAYLOAD_VERSION }
+        } finally {
+          this.refreshing.delete(key)
+        }
+      })()
+      this.refreshing.set(key, pending)
+    }
     try {
-      const next = await channel.refresh(link, this.config)
+      const next = await pending
       if (signal?.aborted === true) return next
-      await writeLink(this.ctx, channel.id, next)
-      return { ...next, version: PAYLOAD_VERSION }
+      return next
     } catch (error) {
       await this.dropRoute(channel)
       throw error
@@ -938,6 +963,7 @@ export class SubscriptionService {
     this.routes.clear()
   }
 }
+
 
 
 
