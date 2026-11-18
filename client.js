@@ -15,6 +15,7 @@ window.__ModuleLoader__.load({
       entrySub: '登录订阅账号即可使用',
       hint: '登录已有的 ChatGPT、Google Antigravity、Claude 订阅账号，直接使用账号内的模型，无需 API 密钥。',
       login: '登录',
+      addAccount: '添加账号',
       edit: '编辑',
       logout: '退出登录',
       cancel: '取消',
@@ -77,6 +78,7 @@ window.__ModuleLoader__.load({
       entrySub: 'Sign in with a subscription account',
       hint: 'Sign in to an existing ChatGPT, Google Antigravity or Claude subscription and use the models it already includes — no API key needed.',
       login: 'Sign in',
+      addAccount: 'Add account',
       edit: 'Edit',
       logout: 'Sign out',
       cancel: 'Cancel',
@@ -916,12 +918,12 @@ window.__ModuleLoader__.load({
         }
       }, [attemptId, onChanged])
 
-      const start = async () => {
+      const start = async (newAccount = false) => {
         setError(undefined)
         setAttempt(undefined)
         setBusy(true)
         try {
-          const started = await api('/login', { method: 'POST', body: JSON.stringify({ channel: channel.id }) })
+          const started = await api('/login', { method: 'POST', body: JSON.stringify({ channel: channel.id, newAccount }) })
           if (started.status === 'authorized') {
             setBusy(false)
             setAttempt({ status: 'authorized' })
@@ -1025,6 +1027,14 @@ window.__ModuleLoader__.load({
                 disabled: busy,
                 onClick: () => setEditing(value => !value),
               }, t('edit'))
+              : null,
+            !running && channel.linked === true && channel.id === 'chatgpt'
+              ? h('button', {
+                type: 'button',
+                className: 'sc-secondaryButton',
+                disabled: busy,
+                onClick: () => { void start(true) },
+              }, t('addAccount'))
               : null,
             !running && channel.linked === true
               ? h(
@@ -1407,6 +1417,7 @@ window.__ModuleLoader__.load({
     }
   },
 })
+
 
 
 

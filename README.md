@@ -149,6 +149,7 @@ npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
 
 ## 版本
 
+- **v0.2.5**：ChatGPT 渠道行显示当前账号，并提供「添加账号」（走新注册，不覆盖已保存账号）；账号切换界面留待后续版本。
 - **v0.2.4**：同一注册的并发请求共享一次令牌刷新（单飞），避免轮换令牌互相作废；跨进程并发仍以最后写入为准。
 - **v0.2.3**：凭据记录改为「按签发 client_id 隔离的注册集合 + 当前账号」，旧单条记录自动升级；登出保留注册关系与主机 ID，其他账号不受影响。
 - **v0.2.2**：ChatGPT 渠道改用官方 **Sign in with ChatGPT**（动态注册、ID Token 验签、计划权限校验、/v1/responses 契约、刷新轮换与撤销）；模型目录改由 /v1/models 提供；保留 chatgptFlow: codex 显式回退。
@@ -163,6 +164,7 @@ npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
 ---
 
 **English**: A DeepSeek Harness plugin that adds a *subscription channels* entry to Settings → Models, letting you sign in to existing ChatGPT, Google Antigravity, or Claude subscriptions (OAuth + PKCE, credentials in the local DSH store) and use their models directly. Unofficial upstream endpoints; text and tool calls only; MIT licensed.
+
 
 
 
