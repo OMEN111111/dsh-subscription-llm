@@ -133,6 +133,31 @@ export async function writeLink(ctx, channelId, payload) {
  * A Sign in with ChatGPT registration keeps its issued client id and identity so
  * the same account can be reauthorized later, and other registrations keep
  * their own tokens; every other channel deletes its record.
+ * Forget one registration's tokens while keeping its identity.
+ * @param ctx - owning plugin context.
+ * @param channelId - channel identity.
+ * @param key - the registration's storage key.
+ * @returns the remaining accounts.
+ */
+export async function clearAccount(ctx, channelId, key) {
+  const set = await readSet(ctx, channelId)
+  const accounts = set.accounts.map((account) => {
+    if (accountKey(account) !== key) return account
+    const { accessToken, refreshToken, idToken, expiresAt, scope, ...identity } = account
+    return identity
+  })
+  const selectedStillUsable = accounts.find(account => accountKey(account) === set.selected && hasTokens(account))
+  const next = selectedStillUsable ?? accounts.find(account => hasTokens(account))
+  await writeSet(ctx, channelId, { accounts, selected: next === undefined ? undefined : accountKey(next) })
+  return accounts
+}
+
+/**
+ * Remove the selected registration's tokens.
+ *
+ * A Sign in with ChatGPT registration keeps its issued client id and identity so
+ * the same account can be reauthorized later, and other registrations keep
+ * their own tokens; every other channel deletes its record.
  * @param ctx - owning plugin context.
  * @param channelId - channel identity.
  * @param options - `keepRegistrations` strips tokens instead of deleting the record.
@@ -144,14 +169,7 @@ export async function clearLink(ctx, channelId, options = {}) {
     await credentials.deleteRecord(recordKey(channelId))
     return
   }
-  const set = await readSet(ctx, channelId)
-  const accounts = set.accounts.map((account) => {
-    if (accountKey(account) !== set.selected) return account
-    const { accessToken, refreshToken, idToken, expiresAt, scope, ...identity } = account
-    return identity
-  })
-  const next = accounts.find(account => hasTokens(account))
-  await writeSet(ctx, channelId, { accounts, selected: next === undefined ? undefined : accountKey(next) })
+  await clearAccount(ctx, channelId, (await readSet(ctx, channelId)).selected)
 }
 
 /**
@@ -179,3 +197,4 @@ export function isFresh(link, skewMs = 60_000) {
   if (typeof link.expiresAt !== 'number') return true
   return link.expiresAt - Date.now() > skewMs
 }
+

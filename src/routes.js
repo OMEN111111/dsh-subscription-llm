@@ -128,12 +128,18 @@ export function registerRoutes(ctx, service) {
     return json(await service.selectAccount(input.channel, input.key))
   })
 
+  register('/account/logout', ['POST'], async (request) => {
+    const input = await body(request)
+    return json(await service.logoutAccount(input.channel, input.key))
+  })
+
   register('/logout', ['POST'], async (request) => {
     const { channel } = await body(request)
     await service.logout(channel)
     return json({ ok: true })
   })
 }
+
 
 
 

@@ -706,3 +706,33 @@ test('a legacy ChatGPT grant is treated as signed out', async () => {
   assert.equal(await service.credential(CHANNEL_BY_ID.get('chatgpt'), undefined), undefined)
   service.dispose()
 })
+
+test('signing out one account keeps the others and moves the selection', async () => {
+  const host = makeHost()
+  const now = Date.now() + 3_600_000
+  await writeLink(host.ctx, 'chatgpt', { flow: 'siwc', clientId: 'oaiapp_a', account: 'first@example.com', accessToken: 't1', refreshToken: 'r1', expiresAt: now })
+  await writeLink(host.ctx, 'chatgpt', { flow: 'siwc', clientId: 'oaiapp_b', account: 'second@example.com', accessToken: 't2', refreshToken: 'r2', expiresAt: now })
+  await selectAccount(host.ctx, 'chatgpt', 'oaiapp_b')
+  const service = new SubscriptionService(host.ctx, config)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('openid-configuration')) {
+      return new Response(JSON.stringify({ revocation_endpoint: 'https://auth.openai.com/oauth/revoke' }), { status: 200 })
+    }
+    return new Response('', { status: 200 })
+  }
+  try {
+    const state = await service.logoutAccount('chatgpt', 'oaiapp_b')
+    const chatgpt = state.channels.find(entry => entry.id === 'chatgpt')
+    assert.equal(chatgpt.accounts.length, 2)
+    const second = chatgpt.accounts.find(entry => entry.key === 'oaiapp_b')
+    assert.equal(second.linked, false)
+    assert.equal(second.name, 'second')
+    assert.equal(second.clientPrefix, 'oaiapp_b')
+    assert.equal(chatgpt.accounts.find(entry => entry.key === 'oaiapp_a').linked, true)
+    assert.equal(chatgpt.account, 'first@example.com')
+  } finally {
+    globalThis.fetch = originalFetch
+    service.dispose()
+  }
+})

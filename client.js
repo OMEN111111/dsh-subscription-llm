@@ -19,6 +19,8 @@ window.__ModuleLoader__.load({
       accountsTitle: 'ChatGPT 账号',
       accountSelected: '当前账号',
       accountNeedsLogin: '需重新登录',
+      signOutAccount: '退出',
+      confirmSignOutAccount: '确认退出',
       edit: '编辑',
       logout: '退出登录',
       cancel: '取消',
@@ -85,6 +87,8 @@ window.__ModuleLoader__.load({
       accountsTitle: 'ChatGPT accounts',
       accountSelected: 'Current account',
       accountNeedsLogin: 'Sign in again',
+      signOutAccount: 'Sign out',
+      confirmSignOutAccount: 'Confirm',
       edit: 'Edit',
       logout: 'Sign out',
       cancel: 'Cancel',
@@ -619,18 +623,39 @@ window.__ModuleLoader__.load({
       return translated === key ? (fallback ?? id) : translated
     }
 
-    /** The per-channel catalog panel, mirroring the official model catalog section. */
+    /** The per-channel account list: switch the active registration or end one. */
     function AccountSection(props) {
       const { channel, t, onChanged } = props
       const [busy, setBusy] = React.useState(undefined)
       const [error, setError] = React.useState(undefined)
+      const [confirming, setConfirming] = React.useState(undefined)
       const accounts = channel.accounts ?? []
       if (accounts.length === 0) return null
       const select = async (key) => {
         setBusy(key)
         setError(undefined)
+        setConfirming(undefined)
         try {
           await api('/account/select', { method: 'POST', body: JSON.stringify({ channel: channel.id, key }) })
+          await onChanged()
+        } catch (cause) {
+          setError(String(cause.message ?? cause))
+        } finally {
+          setBusy(undefined)
+        }
+      }
+      const signOut = async (account) => {
+        if (confirming !== account.key) {
+          setConfirming(account.key)
+          setError(undefined)
+          setTimeout(() => setConfirming(current => (current === account.key ? undefined : current)), 5000)
+          return
+        }
+        setBusy(account.key)
+        setConfirming(undefined)
+        setError(undefined)
+        try {
+          await api('/account/logout', { method: 'POST', body: JSON.stringify({ channel: channel.id, key: account.key }) })
           await onChanged()
         } catch (cause) {
           setError(String(cause.message ?? cause))
@@ -647,19 +672,34 @@ window.__ModuleLoader__.load({
           h('span', { className: 'sc-modelCatalogTitle' }, t('accountsTitle')),
         ),
         ...accounts.map(account => h(
-          'button',
-          {
-            key: account.key,
-            type: 'button',
-            className: 'sc-accountRow',
-            'data-selected': account.selected === true ? 'true' : 'false',
-            disabled: account.linked !== true || busy !== undefined,
-            onClick: () => { if (account.selected !== true && account.linked === true) void select(account.key) },
-          },
-          h('span', { className: 'sc-accountEmail' }, account.email ?? `${account.key.slice(0, 14)}…`),
-          h('span', { className: 'sc-accountMeta' }, account.linked !== true
-            ? t('accountNeedsLogin')
-            : account.selected === true ? t('accountSelected') : ''),
+          'div',
+          { key: account.key, className: 'sc-accountRowWrap' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'sc-accountRow',
+              'data-selected': account.selected === true ? 'true' : 'false',
+              title: account.email ?? account.key,
+              disabled: account.linked !== true || busy !== undefined,
+              onClick: () => { if (account.selected !== true && account.linked === true) void select(account.key) },
+            },
+            h('span', { className: 'sc-accountEmail' }, account.email ?? account.name ?? `${account.key.slice(0, 14)}…`),
+            account.clientPrefix === undefined
+              ? null
+              : h('span', { className: 'sc-accountClient' }, `client=${account.clientPrefix}…`),
+            h('span', { className: 'sc-accountMeta' }, account.linked !== true
+              ? t('accountNeedsLogin')
+              : account.selected === true ? t('accountSelected') : ''),
+          ),
+          account.linked === true
+            ? h('button', {
+              type: 'button',
+              className: confirming === account.key ? 'sc-accountSignOut sc-accountSignOutConfirm' : 'sc-accountSignOut',
+              disabled: busy !== undefined,
+              onClick: () => { void signOut(account) },
+            }, confirming === account.key ? t('confirmSignOutAccount') : t('signOutAccount'))
+            : null,
         )),
         error === undefined ? null : h('p', { className: 'sc-error', role: 'alert' }, error),
       )
@@ -1354,10 +1394,15 @@ window.__ModuleLoader__.load({
 .sc-modelCatalogHeading { display: flex; flex-direction: column; gap: 2px; }
 .sc-modelCatalogTitle { font-size: 12px; line-height: 18px; font-weight: 500; color: var(--dsw-alias-label-secondary); }
     .sc-accountPicker { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
-    .sc-accountRow { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border: 0.5px solid var(--dsw-alias-border-l4, var(--dsw-alias-border-l1)); border-radius: var(--dsw-radius-md, 8px); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+    .sc-accountRowWrap { display: flex; align-items: center; gap: 6px; }
+    .sc-accountRow { flex: 1; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border: 0.5px solid var(--dsw-alias-border-l4, var(--dsw-alias-border-l1)); border-radius: var(--dsw-radius-md, 8px); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
     .sc-accountRow[data-selected='true'] { border-color: var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary)); }
     .sc-accountRow:disabled { opacity: 0.55; cursor: default; }
+    .sc-accountSignOut { height: 28px; padding: 0 8px; border: 0.5px solid var(--dsw-alias-border-l4, var(--dsw-alias-border-l1)); border-radius: var(--dsw-radius-sm, 6px); background: transparent; color: inherit; font-size: 12px; line-height: 18px; cursor: pointer; }
+    .sc-accountSignOut:hover { background: var(--dsw-alias-bg-l2, transparent); }
+    .sc-accountSignOutConfirm { color: var(--dsw-alias-state-error-primary); border-color: var(--dsw-alias-state-error-primary); }
     .sc-accountEmail { font-size: 13px; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sc-accountClient { font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
     .sc-accountMeta { margin-left: auto; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
 .sc-modelCatalogMeta { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); opacity: 0.75; }
 .sc-headLinks { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
@@ -1477,6 +1522,7 @@ window.__ModuleLoader__.load({
     }
   },
 })
+
 
 
 

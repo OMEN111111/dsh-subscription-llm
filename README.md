@@ -130,7 +130,7 @@ export const CLIENT_SECRET = '<the antigravity client secret>'
 
 ## 测试
 
-仓库带有 47 项单元/集成测试，覆盖三条线路的流解析与请求体构造、图片序列化、令牌轮换、路由同步、超时结算、目录覆盖与可见性、检测结果分类：
+仓库带有 48 项单元/集成测试，覆盖三条线路的流解析与请求体构造、图片序列化、令牌轮换、路由同步、超时结算、目录覆盖与可见性、检测结果分类：
 
 ```bash
 npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
@@ -147,6 +147,7 @@ npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
 
 ## 版本
 
+- **v0.2.8**：账号列表自动命名（邮箱前缀）并显示 client=… 前缀；支持逐个退出账号（两步确认），退出当前账号后自动切到仍可用的账号。
 - **v0.2.7**：移除旧 Codex 接入路径（遗留 grant 视为未登录）；设置页新增 ChatGPT 账号列表，可切换当前账号。
 - **v0.2.6**：真实账号回归（工具调用 + 第二轮历史、额度/断流错误映射、并发刷新）。
 - **v0.2.5**：ChatGPT 渠道行显示当前账号，并提供「添加账号」（走新注册，不覆盖已保存账号）；账号切换界面留待后续版本。
@@ -164,6 +165,7 @@ npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
 ---
 
 **English**: A DeepSeek Harness plugin that adds a *subscription channels* entry to Settings → Models, letting you sign in to existing ChatGPT, Google Antigravity, or Claude subscriptions (OAuth + PKCE, credentials in the local DSH store) and use their models directly. Unofficial upstream endpoints; text and tool calls only; MIT licensed.
+
 
 
 

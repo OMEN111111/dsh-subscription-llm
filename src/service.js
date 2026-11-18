@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto'
 import { CHANNELS, CHANNEL_BY_ID } from './channels/index.js'
 import { SubscriptionAdapter } from './adapter.js'
-import { readLink, readSet, writeLink, clearLink, isFresh, accountKey, hasTokens, selectAccount, recordKey, PAYLOAD_VERSION } from './store.js'
+import { readLink, readSet, writeLink, clearLink, clearAccount, isFresh, accountKey, hasTokens, selectAccount, recordKey, PAYLOAD_VERSION } from './store.js'
 import { message } from './copy.js'
 import { catalogPath, readCatalog, writeCatalog, emptyCatalog } from './catalog.js'
 import { probeModel } from './probe.js'
@@ -29,6 +29,21 @@ function positiveInt(value) {
   const rounded = Math.round(numeric)
   if (!Number.isSafeInteger(rounded) || rounded <= 0) return undefined
   return rounded
+}
+
+/**
+ * The human-facing name of one registration: its label when set, else the email
+ * local part, else the issued client id prefix.
+ * @param account - stored registration.
+ * @returns a short display name.
+ */
+function accountName(account) {
+  if (typeof account.label === 'string' && account.label.length > 0) return account.label
+  if (typeof account.account === 'string' && account.account.includes('@')) {
+    return account.account.slice(0, account.account.indexOf('@'))
+  }
+  const key = accountKey(account)
+  return key === 'default' ? 'default' : key.slice(0, 12)
 }
 
 export class SubscriptionService {
@@ -738,6 +753,8 @@ export class SubscriptionService {
         account: typeof link?.account === 'string' ? link.account : undefined,
         accounts: set.accounts.filter(account => channel.requiresFlow === undefined || account.flow === channel.requiresFlow).map(account => ({
           key: accountKey(account),
+          name: accountName(account),
+          clientPrefix: accountKey(account) === 'default' ? undefined : accountKey(account).slice(0, 12),
           email: typeof account.account === 'string' ? account.account : undefined,
           subject: typeof account.subject === 'string' ? account.subject : undefined,
           linked: hasTokens(account),
@@ -953,6 +970,32 @@ export class SubscriptionService {
   }
 
   /**
+   * End one registration, leaving other accounts and the host identity in place.
+   * @param channelId - which channel.
+   * @param key - the registration's storage key.
+   * @returns the refreshed channel state.
+   */
+  async logoutAccount(channelId, key) {
+    const channel = CHANNEL_BY_ID.get(channelId)
+    if (channel === undefined) throw new Error(`unknown subscription channel "${String(channelId)}"`)
+    const set = await readSet(this.ctx, channel.id)
+    const account = set.accounts.find(entry => accountKey(entry) === String(key))
+    if (account === undefined) throw new Error('unknown account')
+    if (typeof channel.revoke === 'function' && hasTokens(account)) {
+      try {
+        await channel.revoke(account, this.config)
+      } catch (error) {
+        this.ctx.logger.info('subscription-channels: revocation for %s failed: %s', accountKey(account), String(error?.message ?? error))
+      }
+    }
+    const accounts = await clearAccount(this.ctx, channel.id, accountKey(account))
+    if (accounts.some(hasTokens)) this.registerRoute(channel)
+    else await this.dropRoute(channel)
+    this.announce(channel)
+    return this.state()
+  }
+
+  /**
    * Make one saved registration the active one.
    * @param channelId - which channel.
    * @param key - the registration's storage key (issued client id).
@@ -979,6 +1022,7 @@ export class SubscriptionService {
     this.routes.clear()
   }
 }
+
 
 
 
