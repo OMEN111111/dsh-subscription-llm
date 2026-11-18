@@ -133,7 +133,7 @@ export const CLIENT_SECRET = '<the antigravity client secret>'
 
 ## 测试
 
-仓库带有 62 项单元/集成测试，覆盖三条线路的流解析与请求体构造、图片序列化、令牌轮换、路由同步、超时结算、目录覆盖与可见性、检测结果分类：
+仓库带有 71 项单元/集成测试，覆盖三条线路的流解析与请求体构造、图片序列化、令牌轮换、路由同步、超时结算、目录覆盖与可见性、检测结果分类：
 
 ```bash
 npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
@@ -150,6 +150,7 @@ npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
 
 ## 版本
 
+- **v0.3.2**：修复流式响应误报 `STREAM_CLOSED`，完善失败/断流/取消区分与安全诊断日志。
 - **v0.3.1**：开发目录的「立即更新」改用 git pull --ff-only，并展示失败原因。
 - **v0.3.0**：新增「检查更新」；账号默认使用登录账号名并支持重命名/恢复默认；默认只显示「添加账号」并选择渠道登录；修复凭据 undefined 序列化导致登录失败、退出后卡片残留名字等问题。
 - **v0.2.11**：**一个账号一个 provider**——每个 ChatGPT 注册拥有独立卡片、独立目录与独立路由；胶囊体按账号分组，模型不混合；「恢复默认模型」改为向账号重新拉取 /v1/models。

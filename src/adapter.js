@@ -33,6 +33,49 @@ export function providerFailure(status, body) {
   return { message, code: PROVIDER_ERROR, status }
 }
 
+/**
+ * Whether an error means the transport closed under us rather than the
+ * provider rejecting the request.
+ * @param error - thrown value.
+ * @returns true for socket/stream failures.
+ */
+function isNetworkError(error) {
+  if (error === null || typeof error !== 'object') return false
+  const message = String(error.message ?? '')
+  return /terminated|ECONNRESET|ECONNABORTED|EPIPE|socket|other side closed|fetch failed|network/iu.test(message)
+}
+
+/**
+ * Map a provider stream error code onto the harness failure vocabulary.
+ * @param code - provider code, if any.
+ * @returns the harness code.
+ */
+function classifyStreamCode(code) {
+  const text = String(code ?? '')
+  if (/rate.?limit/iu.test(text)) return RATE_LIMIT
+  if (/quota|usage_limit|credits|exceeded/iu.test(text)) return QUOTA
+  if (/invalid.*credential|unauthor|forbidden/iu.test(text)) return INVALID_CREDENTIAL
+  return PROVIDER_ERROR
+}
+
+/**
+ * Emit one safe diagnostic line: status, request id, event types, timing.
+ * Never includes prompts, completions, or tokens.
+ * @param service - owning service.
+ * @param details - provider, model, outcome, and counters.
+ */
+function logStream(service, details) {
+  const logger = service.ctx?.logger
+  if (logger === undefined) return
+  const line = 'subscription stream ' + details.provider + ' ' + details.outcome
+    + ' status=' + details.status
+    + ' requestId=' + (details.requestId ?? '-')
+    + ' events=' + details.events
+    + ' elapsed=' + details.elapsed + 'ms'
+  if (details.outcome === 'ok') logger.debug?.(line)
+  else logger.info?.(line)
+}
+
 function errorMessage(body) {
   if (body === null || typeof body !== 'object') return undefined
   const error = body.error
@@ -177,21 +220,68 @@ export class SubscriptionAdapter {
       return
     }
     let finished = false
+    const startedAt = Date.now()
+    const diagnostics = {
+      events: new Set(),
+      requestId: response.headers.get('x-oai-request-id') ?? response.headers.get('openai-request-id') ?? undefined,
+    }
+    const diagnostic = outcome => logStream(this.service, {
+      provider: options.provider,
+      model: options.model,
+      outcome,
+      status: response.status,
+      requestId: diagnostics.requestId,
+      events: diagnostics.events.size,
+      elapsed: Date.now() - startedAt,
+    })
     try {
-      for await (const chunk of channel.parseStream(response, options)) {
+      for await (const chunk of channel.parseStream(response, options, diagnostics)) {
+        if (finished) break
         if (chunk.type === 'finish') finished = true
         yield chunk
       }
     } catch (error) {
-      if (options.signal?.aborted === true) {
-        yield { type: 'finish', reason: { kind: 'aborted', failure: { message: 'aborted', code: 'ABORTED' } } }
+      // A terminal chunk already went out; never emit a second finish.
+      if (finished) return
+      if (options.signal?.aborted === true || error?.name === 'AbortError') {
+        diagnostic('aborted')
+        const reason = options.signal?.reason
+        const message = reason instanceof Error ? reason.message : typeof reason === 'string' ? reason : 'aborted'
+        yield { type: 'finish', reason: { kind: 'aborted', failure: { message, code: 'ABORTED' } } }
         return
       }
-      yield { type: 'finish', reason: { kind: 'error', failure: { message: String(error?.message ?? error), code: STREAM_CLOSED } } }
+      if (error?.name === 'StreamClosedError') {
+        diagnostic('truncated')
+        yield { type: 'finish', reason: { kind: 'error', failure: { message: String(error.message), code: STREAM_CLOSED } } }
+        return
+      }
+      if (error?.name === 'ProviderStreamError') {
+        diagnostic('provider-error')
+        const code = classifyStreamCode(error.code)
+        const suffix = error.requestId === undefined ? '' : ` (request ${error.requestId})`
+        const param = error.param === undefined ? '' : ` param=${error.param}`
+        yield {
+          type: 'finish',
+          reason: { kind: 'error', failure: { message: `${error.code}: ${error.message}${param}${suffix}`, code } },
+        }
+        return
+      }
+      if (isNetworkError(error)) {
+        diagnostic('network')
+        yield { type: 'finish', reason: { kind: 'error', failure: { message: `network: ${String(error?.message ?? error)}`, code: 'NETWORK' } } }
+        return
+      }
+      diagnostic('error')
+      yield { type: 'finish', reason: { kind: 'error', failure: { message: String(error?.message ?? error), code: PROVIDER_ERROR } } }
       return
     }
     if (!finished) {
+      diagnostic('truncated')
       yield { type: 'finish', reason: { kind: 'error', failure: { message: 'stream ended without a stop reason', code: STREAM_CLOSED } } }
+      return
     }
+    diagnostic('ok')
   }
 }
+
+

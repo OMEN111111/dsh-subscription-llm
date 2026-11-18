@@ -1,5 +1,16 @@
 # 更新日志
 
+## 0.3.2
+
+### 修复
+
+- ChatGPT 流式响应收到 `response.completed` 后立即停止读取并释放响应体，代理在尾包后复位连接不再把成功响应误判为 `terminated / STREAM_CLOSED`。
+- `response.failed`、`response.incomplete` 与 `error` 事件不再被当作正常完成；保留错误代码、消息、参数与请求 ID（含嵌套错误结构）。
+- 适配器保证每次请求只有一个最终状态：先收到 `finish` 后不会再写入，也不会重复发送。
+- 区分上游错误（PROVIDER_ERROR / RATE_LIMIT / QUOTA）、网络断流（NETWORK）、流被截断（STREAM_CLOSED）与用户/宿主取消（ABORTED），保留原始异常文本。
+- 新增安全诊断日志：仅记录 HTTP 状态、request ID、SSE 事件类型、终止状态与耗时，不含令牌、提示词或模型输出。
+- 新增 9 项流式回归测试（完成后复位、断流、嵌套错误、failed、incomplete、单次 finish、取消、工具调用、无终止事件）。
+
 ## 0.3.1
 
 - 开发目录（含 .git）的「立即更新」改为执行 git pull --ff-only，不再只提示手动更新；失败时显示 git 的具体错误。

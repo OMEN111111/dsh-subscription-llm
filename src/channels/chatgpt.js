@@ -34,6 +34,47 @@ const SIWC = {
 
 const USER_AGENT = 'deepseek-harness (+https://github.com/deepseek-ai/deepseek-harness)'
 
+/** A provider-reported stream failure that keeps its original code and request id. */
+export class ProviderStreamError extends Error {
+  /**
+   * @param message - human-readable failure text.
+   * @param details - provider code, parameter, and request id.
+   */
+  constructor(message, details = {}) {
+    super(message)
+    this.name = 'ProviderStreamError'
+    this.code = details.code
+    this.param = details.param
+    this.requestId = details.requestId
+  }
+}
+
+/**
+ * Read a provider error event without assuming where the fields live.
+ * Responses emit both flat ({code,message}) and nested ({error:{...}})
+ * shapes; the request id may also only be present on the HTTP response.
+ * @param event - decoded SSE event.
+ * @param response - the streaming response.
+ * @returns normalized error details.
+ */
+function streamErrorDetails(event, response) {
+  const nested = event?.error ?? event?.response?.error ?? {}
+  const code = event?.code ?? nested.code ?? nested.type ?? 'provider_error'
+  const message = event?.message ?? nested.message ?? 'the provider reported an error'
+  const param = event?.param ?? nested.param
+  const requestId = event?.request_id
+    ?? nested.request_id
+    ?? response?.headers?.get('x-oai-request-id')
+    ?? response?.headers?.get('openai-request-id')
+    ?? undefined
+  return {
+    code: String(code),
+    message: String(message),
+    ...param === undefined ? {} : { param: String(param) },
+    ...requestId === undefined ? {} : { requestId: String(requestId) },
+  }
+}
+
 /** Model catalog advertised before the account is asked anything. */
 const MODELS = [
   { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', contextWindow: 500_000, maxTokens: 128_000, inputModalities: ['text', 'image'], efforts: ['low', 'medium', 'high'] },
@@ -422,11 +463,16 @@ export default {
   },
 
   /** Translate the Responses event stream into harness chunks. */
-  async *parseStream(response) {
+  async *parseStream(response, _options, diagnostics) {
     const blocks = new Map()
     let nextIndex = 0
     let usage
     let terminal
+    let completed = false
+    const note = (type) => {
+      if (diagnostics?.events === undefined || typeof type !== 'string') return
+      if (diagnostics.events.size < 64) diagnostics.events.add(type)
+    }
     const create = (kind, key) => {
       const block = { index: nextIndex++, kind, key, text: '', json: '', id: '', name: '' }
       blocks.set(key, block)
@@ -438,7 +484,8 @@ export default {
       return create('text', key)
     }
     for await (const event of sseJson(response)) {
-      const type = event.type
+      const type = event?.type
+      note(type)
       if (type === 'response.output_item.added') {
         const item = event.item ?? {}
         if (item.type === 'function_call' || item.type === 'custom_tool_call') {
@@ -534,22 +581,37 @@ export default {
         }
         continue
       }
-      if (type === 'response.completed' || type === 'response.incomplete' || type === 'response.done') {
+      if (type === 'response.completed' || type === 'response.done') {
         const payload = event.response ?? {}
         usage = payload.usage ?? usage
-        terminal = {
-          status: payload.status ?? (type === 'response.completed' ? 'completed' : type === 'response.incomplete' ? 'incomplete' : 'completed'),
-          incomplete: payload.incomplete_details?.reason,
-          error: payload.error,
-        }
-        continue
+        terminal = { status: 'completed' }
+        completed = true
+        break
+      }
+      if (type === 'response.incomplete') {
+        const payload = event.response ?? {}
+        usage = payload.usage ?? usage
+        terminal = { status: 'incomplete', incomplete: payload.incomplete_details?.reason }
+        completed = true
+        break
       }
       if (type === 'response.failed') {
-        const error = event.response?.error ?? {}
-        throw new Error(`${String(error.code ?? 'response_failed')}: ${String(error.message ?? 'the provider failed the response')}`)
+        const details = streamErrorDetails(event.response ?? {}, response)
+        throw new ProviderStreamError(`${details.code}: ${details.message}`, details)
       }
       if (type === 'error') {
-        throw new Error(`${String(event.code ?? 'error')}: ${String(event.message ?? 'the provider reported an error')}`)
+        const details = streamErrorDetails(event, response)
+        throw new ProviderStreamError(`${details.code}: ${details.message}`, details)
+      }
+    }
+    // The response is complete: stop reading and release the body. A proxy may
+    // reset the connection right after the final event; that must not turn a
+    // finished answer into a failure.
+    if (completed) {
+      try {
+        await response.body?.cancel()
+      } catch (_bodyAlreadyClosed) {
+        // Cancelling a body that already ended (or is locked) is harmless.
       }
     }
     for (const block of blocks.values()) {
@@ -562,10 +624,10 @@ export default {
         yield { type: 'block-end', index: block.index, block: { type: 'text', text: block.text } }
       }
     }
-    if (terminal === undefined) throw new Error('the ChatGPT stream ended without a terminal response event')
-    if (terminal.error !== undefined && terminal.status === 'failed') {
-      const error = terminal.error ?? {}
-      throw new Error(`${String(error.code ?? 'response_failed')}: ${String(error.message ?? 'the provider failed the response')}`)
+    if (terminal === undefined) {
+      const error = new Error('the ChatGPT stream ended without a terminal response event')
+      error.name = 'StreamClosedError'
+      throw error
     }
     const mapped = mapUsage(usage)
     if (mapped !== undefined) yield { type: 'usage', usage: mapped }
@@ -602,6 +664,10 @@ function mapUsage(usage) {
       : {}),
   }
 }
+
+
+
+
 
 
 
