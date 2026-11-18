@@ -8,7 +8,7 @@ import { join } from 'node:path'
 
 import { SubscriptionService } from '../src/service.js'
 import { normalizeConfig } from '../src/config.js'
-import { recordKey } from '../src/store.js'
+import { recordKey, readSet, readLink, writeLink, selectAccount } from '../src/store.js'
 import { CHANNEL_BY_ID } from '../src/channels/index.js'
 
 // Keep the catalog document inside a throwaway home instead of the real ~/.dsh.
@@ -160,8 +160,9 @@ test('a completed sign-in stores the grant and publishes the route', async () =>
   assert.equal(service.attempt('attempt-1').status, 'authorized')
   const stored = host.records.get(recordKey('chatgpt'))
   assert.equal(stored.kind, 'grant')
-  assert.equal(stored.payload.accountId, 'acct-123')
   assert.equal(stored.payload.version, 1)
+  assert.equal(stored.payload.selected, 'default')
+  assert.equal(stored.payload.accounts[0].accountId, 'acct-123')
   assert.ok(host.adapters.has('chatgpt-sub'))
 
   // The route serves the real ChatGPT catalog; the fake channel only replaced the sign-in.
@@ -249,7 +250,7 @@ test('an expiring grant rotates through the channel refresh before use', async (
     assert.equal(credential.accessToken, 'fresh')
     assert.equal(seen[0].url, 'https://auth.openai.com/oauth/token')
     assert.match(seen[0].body, /grant_type=refresh_token/u)
-    const stored = host.records.get(recordKey('chatgpt')).payload
+    const stored = host.records.get(recordKey('chatgpt')).payload.accounts[0]
     assert.equal(stored.accessToken, 'fresh')
     assert.equal(stored.accountId, 'acct-1')
   } finally {
@@ -544,5 +545,64 @@ test('removing a model hides it from the editor list and adoption brings it back
   assert.equal(adopted.models.some(model => model.id === 'gpt-5.5'), true)
   assert.equal(adopted.models.some(model => model.id === 'gpt-not-listed' && model.custom === true), true)
   service.dispose()
+})
+
+
+
+test('credential sets keep every registration and select one', async () => {
+  const host = makeHost()
+  const now = Date.now() + 3_600_000
+  await writeLink(host.ctx, 'chatgpt', { flow: 'siwc', clientId: 'oaiapp_a', account: 'a@example.com', accessToken: 't1', refreshToken: 'r1', expiresAt: now })
+  await writeLink(host.ctx, 'chatgpt', { flow: 'siwc', clientId: 'oaiapp_b', account: 'b@example.com', accessToken: 't2', refreshToken: 'r2', expiresAt: now })
+  const set = await readSet(host.ctx, 'chatgpt')
+  assert.equal(set.accounts.length, 2)
+  assert.equal(set.selected, 'oaiapp_b')
+  assert.equal((await readLink(host.ctx, 'chatgpt')).account, 'b@example.com')
+
+  const picked = await selectAccount(host.ctx, 'chatgpt', 'oaiapp_a')
+  assert.equal(picked.account, 'a@example.com')
+  assert.equal((await readLink(host.ctx, 'chatgpt')).account, 'a@example.com')
+})
+
+test('a legacy single grant is read as one default registration', async () => {
+  const host = makeHost()
+  host.records.set(recordKey('chatgpt'), {
+    kind: 'grant',
+    payload: { version: 1, accessToken: 'legacy', refreshToken: 'r', expiresAt: Date.now() + 3_600_000, account: 'old@example.com' },
+  })
+  const set = await readSet(host.ctx, 'chatgpt')
+  assert.equal(set.accounts.length, 1)
+  assert.equal(set.selected, 'default')
+  assert.equal((await readLink(host.ctx, 'chatgpt')).account, 'old@example.com')
+})
+
+test('signing out keeps the ChatGPT registration, host identity, and other accounts', async () => {
+  const host = makeHost()
+  const now = Date.now() + 3_600_000
+  await writeLink(host.ctx, 'chatgpt', { flow: 'siwc', clientId: 'oaiapp_a', account: 'a@example.com', accessToken: 't1', refreshToken: 'r1', idToken: 'id1', expiresAt: now })
+  await writeLink(host.ctx, 'chatgpt', { flow: 'siwc', clientId: 'oaiapp_b', account: 'b@example.com', accessToken: 't2', refreshToken: 'r2', expiresAt: now })
+  await selectAccount(host.ctx, 'chatgpt', 'oaiapp_b')
+  const service = new SubscriptionService(host.ctx, config)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('openid-configuration')) {
+      return new Response(JSON.stringify({ revocation_endpoint: 'https://auth.openai.com/oauth/revoke' }), { status: 200 })
+    }
+    return new Response('', { status: 200 })
+  }
+  try {
+    await service.logout('chatgpt')
+  } finally {
+    globalThis.fetch = originalFetch
+    service.dispose()
+  }
+  const set = await readSet(host.ctx, 'chatgpt')
+  assert.equal(set.accounts.length, 2)
+  const first = set.accounts.find(entry => entry.clientId === 'oaiapp_a')
+  const second = set.accounts.find(entry => entry.clientId === 'oaiapp_b')
+  assert.equal(first.accessToken, 't1')
+  assert.equal(second.accessToken, undefined)
+  assert.equal(second.account, 'b@example.com')
+  assert.equal(set.selected, 'oaiapp_a')
 })
 

@@ -1,10 +1,14 @@
 /**
- * Credential records for the three subscription channels.
+ * Credential records for the subscription channels.
  *
- * Each channel owns one record in DSH's credential store under
- * `<scope>/<channel id>`; the record payload is the OAuth grant plus the small
- * amount of account context the Models page shows. Records are the only place
- * tokens live — never Config, never logs.
+ * One record per channel holds a small credential *set*: every registration the
+ * user has authorized, plus which one is selected. A registration is keyed by
+ * the issued `client_id` (or `default` for the legacy single-grant channels), so
+ * signing into a second ChatGPT account never overwrites the first, and a
+ * signed-out registration can keep its identity while its tokens are gone.
+ *
+ * The record lives in DSH's credential store under `<scope>/<channel id>`;
+ * tokens never enter Config, logs, or a model catalog file.
  */
 
 /** Record scope: the plugin's own credential namespace. */
@@ -23,52 +27,146 @@ export function recordKey(channelId) {
 }
 
 /**
- * Read one channel's stored grant.
+ * The storage key of one registration inside a channel's set.
+ * @param account - stored registration.
+ * @returns the issued client id, or `default` for a legacy grant.
+ */
+export function accountKey(account) {
+  return typeof account?.clientId === 'string' && account.clientId.length > 0 ? account.clientId : 'default'
+}
+
+/**
+ * Whether a registration still holds usable tokens.
+ * @param account - stored registration.
+ * @returns true when an access token is present.
+ */
+export function hasTokens(account) {
+  return typeof account?.accessToken === 'string' && account.accessToken.length > 0
+}
+
+/**
+ * One empty credential set.
+ * @returns the set skeleton.
+ */
+function emptySet() {
+  return { version: PAYLOAD_VERSION, accounts: [], selected: undefined }
+}
+
+/**
+ * Read one channel's credential set, upgrading a legacy single grant on read.
  * @param ctx - owning plugin context.
  * @param channelId - channel identity.
- * @returns the parsed payload, or undefined when nothing usable is stored.
+ * @returns the parsed set.
  */
-export async function readLink(ctx, channelId) {
+export async function readSet(ctx, channelId) {
   const credentials = ctx.get('credentials')
-  if (credentials === undefined) return undefined
+  if (credentials === undefined) return emptySet()
   let record
   try {
     record = await credentials.readRecord(recordKey(channelId))
   } catch (_unreadableRecord) {
-    return undefined
+    return emptySet()
   }
-  if (record === undefined || record.kind !== 'grant') return undefined
+  if (record === undefined || record.kind !== 'grant') return emptySet()
   const payload = record.payload
-  if (payload === null || typeof payload !== 'object') return undefined
-  if (payload.version !== PAYLOAD_VERSION) return undefined
-  if (typeof payload.accessToken !== 'string' || payload.accessToken.length === 0) return undefined
-  return payload
+  if (payload === null || typeof payload !== 'object') return emptySet()
+  if (Array.isArray(payload.accounts)) {
+    const accounts = payload.accounts.filter(account => account !== null && typeof account === 'object')
+    const selected = typeof payload.selected === 'string' ? payload.selected : undefined
+    return { version: PAYLOAD_VERSION, accounts, selected }
+  }
+  // A record written before credential sets existed: one grant, one account.
+  if (typeof payload.accessToken === 'string' && payload.accessToken.length > 0) {
+    return { version: PAYLOAD_VERSION, accounts: [payload], selected: 'default' }
+  }
+  return emptySet()
 }
 
 /**
- * Replace one channel's stored grant.
+ * Replace one channel's credential set.
  * @param ctx - owning plugin context.
  * @param channelId - channel identity.
- * @param payload - the grant to store; `version` is stamped here.
+ * @param set - accounts and the selected key.
  */
-export async function writeLink(ctx, channelId, payload) {
+export async function writeSet(ctx, channelId, set) {
   const credentials = ctx.get('credentials')
   if (credentials === undefined) throw new Error('this composition mounts no credential store')
   await credentials.modifyRecord(recordKey(channelId), async () => ({
     kind: 'grant',
-    payload: { ...payload, version: PAYLOAD_VERSION },
+    payload: {
+      version: PAYLOAD_VERSION,
+      accounts: set.accounts,
+      ...typeof set.selected === 'string' && set.selected.length > 0 ? { selected: set.selected } : {},
+    },
   }))
 }
 
 /**
- * Delete one channel's stored grant. Idempotent.
+ * Read the selected registration that still holds tokens, else the first one.
  * @param ctx - owning plugin context.
  * @param channelId - channel identity.
+ * @returns the usable registration, or undefined.
  */
-export async function clearLink(ctx, channelId) {
+export async function readLink(ctx, channelId) {
+  const set = await readSet(ctx, channelId)
+  const selected = set.accounts.find(account => accountKey(account) === set.selected)
+  if (selected !== undefined && hasTokens(selected)) return selected
+  return set.accounts.find(account => hasTokens(account))
+}
+
+/**
+ * Upsert one registration and select it.
+ * @param ctx - owning plugin context.
+ * @param channelId - channel identity.
+ * @param payload - the grant to store; `version` is stamped by {@link writeSet}.
+ */
+export async function writeLink(ctx, channelId, payload) {
+  const set = await readSet(ctx, channelId)
+  const key = accountKey(payload)
+  const accounts = [...set.accounts.filter(account => accountKey(account) !== key), payload]
+  await writeSet(ctx, channelId, { accounts, selected: key })
+}
+
+/**
+ * Remove the selected registration's tokens.
+ *
+ * A Sign in with ChatGPT registration keeps its issued client id and identity so
+ * the same account can be reauthorized later, and other registrations keep
+ * their own tokens; every other channel deletes its record.
+ * @param ctx - owning plugin context.
+ * @param channelId - channel identity.
+ * @param options - `keepRegistrations` strips tokens instead of deleting the record.
+ */
+export async function clearLink(ctx, channelId, options = {}) {
   const credentials = ctx.get('credentials')
   if (credentials === undefined) return
-  await credentials.deleteRecord(recordKey(channelId))
+  if (options.keepRegistrations !== true) {
+    await credentials.deleteRecord(recordKey(channelId))
+    return
+  }
+  const set = await readSet(ctx, channelId)
+  const accounts = set.accounts.map((account) => {
+    if (accountKey(account) !== set.selected) return account
+    const { accessToken, refreshToken, idToken, expiresAt, scope, ...identity } = account
+    return identity
+  })
+  const next = accounts.find(account => hasTokens(account))
+  await writeSet(ctx, channelId, { accounts, selected: next === undefined ? undefined : accountKey(next) })
+}
+
+/**
+ * Select one saved registration.
+ * @param ctx - owning plugin context.
+ * @param channelId - channel identity.
+ * @param key - the registration's storage key.
+ * @returns the selected registration, or undefined when it holds no tokens.
+ */
+export async function selectAccount(ctx, channelId, key) {
+  const set = await readSet(ctx, channelId)
+  const account = set.accounts.find(entry => accountKey(entry) === key)
+  if (account === undefined || !hasTokens(account)) return undefined
+  await writeSet(ctx, channelId, { accounts: set.accounts, selected: key })
+  return account
 }
 
 /**

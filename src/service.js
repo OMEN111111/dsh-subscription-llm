@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto'
 import { CHANNELS, CHANNEL_BY_ID } from './channels/index.js'
 import { SubscriptionAdapter } from './adapter.js'
-import { readLink, writeLink, clearLink, isFresh, recordKey, PAYLOAD_VERSION } from './store.js'
+import { readLink, readSet, writeLink, clearLink, isFresh, accountKey, hasTokens, selectAccount, recordKey, PAYLOAD_VERSION } from './store.js'
 import { message } from './copy.js'
 import { catalogPath, readCatalog, writeCatalog, emptyCatalog } from './catalog.js'
 import { probeModel } from './probe.js'
@@ -43,6 +43,8 @@ export class SubscriptionService {
     this.attempts = new Map()
     /** channel id -> the attempt currently running */
     this.active = new Map()
+    /** channel ids whose next sign-in must register a new client instead of reusing one */
+    this.forceNewAccount = new Set()
     /** channel id -> adapter registration handle */
     this.routes = new Map()
     /** Durable per-channel catalog: visibility, per-model overrides, last discovery. */
@@ -528,6 +530,7 @@ export class SubscriptionService {
         label: this.label(channel),
         methods: [{ id: 'oauth', label: this.config.lang === 'en' ? 'Browser sign-in' : '浏览器登录' }],
         run: async (session) => {
+          const previous = this.forceNewAccount.has(channel.id) ? undefined : await readLink(this.ctx, channel.id)
           const payload = await channel.login({
             interaction: {
               notify: notice => { session.notify(notice) },
@@ -535,9 +538,20 @@ export class SubscriptionService {
             },
             signal: session.signal,
             config: this.config,
-            previous: await readLink(this.ctx, channel.id),
+            previous,
           })
-          await session.commit({ kind: 'grant', payload: { ...payload, version: PAYLOAD_VERSION } })
+          // Merge into the channel's credential set: one registration per issued
+          // client id, and the fresh one becomes selected.
+          const current = await readSet(this.ctx, channel.id)
+          const key = accountKey(payload)
+          const accounts = [
+            ...current.accounts.filter(account => accountKey(account) !== key),
+            { ...payload, savedAt: new Date().toISOString() },
+          ]
+          await session.commit({
+            kind: 'grant',
+            payload: { version: PAYLOAD_VERSION, accounts, selected: key },
+          })
           this.registerRoute(channel)
         },
       }))
@@ -666,6 +680,7 @@ export class SubscriptionService {
   async state() {
     const channels = []
     for (const channel of CHANNELS) {
+      const set = await readSet(this.ctx, channel.id)
       const link = await readLink(this.ctx, channel.id)
       channels.push({
         id: channel.id,
@@ -680,6 +695,13 @@ export class SubscriptionService {
             ? 'linked'
             : typeof link.refreshToken === 'string' && link.refreshToken.length > 0 ? 'expiring' : 'expired',
         account: typeof link?.account === 'string' ? link.account : undefined,
+        accounts: set.accounts.map(account => ({
+          key: accountKey(account),
+          email: typeof account.account === 'string' ? account.account : undefined,
+          subject: typeof account.subject === 'string' ? account.subject : undefined,
+          linked: hasTokens(account),
+          selected: accountKey(account) === set.selected,
+        })),
         modelCount: this.models(channel).length,
         hiddenCount: this.catalogModels(channel).length - this.models(channel).length,
         expiresAt: typeof link?.expiresAt === 'number' ? link.expiresAt : undefined,
@@ -691,13 +713,15 @@ export class SubscriptionService {
   /**
    * Begin one browser sign-in.
    * @param channelId - which channel.
+   * @param options - `newAccount` registers a client instead of reusing the saved one.
    * @returns `{ status }` when already settled, else the attempt id to poll.
    */
-  login(channelId) {
+  login(channelId, options = {}) {
     const channel = CHANNEL_BY_ID.get(channelId)
     if (channel === undefined) throw new Error(`unknown subscription channel "${String(channelId)}"`)
     const running = this.active.get(channel.id)
     if (running !== undefined) return { status: 'pending', attemptId: running.id }
+    if (options.newAccount === true) this.forceNewAccount.add(channel.id)
     const attempt = {
       id: randomUUID(),
       channelId: channel.id,
@@ -706,6 +730,7 @@ export class SubscriptionService {
       prompt: undefined,
       error: undefined,
       cancelled: false,
+      newAccount: options.newAccount === true,
       controller: new AbortController(),
       createdAt: Date.now(),
     }
@@ -753,7 +778,7 @@ export class SubscriptionService {
       }
     }, this.config.loginTimeoutMs)
     try {
-      const payload = await this.authorize(channel, interaction, attempt.controller.signal)
+      const payload = await this.authorize(channel, interaction, attempt.controller.signal, { newAccount: attempt.newAccount === true })
       await writeLink(this.ctx, channel.id, payload)
       this.registerRoute(channel)
       attempt.status = 'authorized'
@@ -788,14 +813,15 @@ export class SubscriptionService {
    * @param signal - cancellation.
    * @returns the grant payload.
    */
-  async authorize(channel, interaction, signal) {
+  async authorize(channel, interaction, signal, options = {}) {
     const authorization = this.ctx.get('authorization')
+    const previous = options.newAccount === true ? undefined : await readLink(this.ctx, channel.id)
     if (authorization === undefined) {
       return channel.login({
         interaction,
         signal,
         config: this.config,
-        previous: await readLink(this.ctx, channel.id),
+        previous,
       })
     }
     const outcome = await authorization.begin({
@@ -878,10 +904,27 @@ export class SubscriptionService {
         this.ctx.logger.info('subscription-channels: revocation for %s failed: %s', channel.id, String(error?.message ?? error))
       }
     }
-    await clearLink(this.ctx, channel.id)
+    // A Sign in with ChatGPT registration keeps its issued client id and identity
+    // so the same account can be reauthorized; catalog edits stay user preferences.
+    await clearLink(this.ctx, channel.id, { keepRegistrations: link?.flow === 'siwc' })
     await this.dropRoute(channel)
-    delete this.catalog.channels[channel.id]
     await this.persistCatalog()
+  }
+
+  /**
+   * Make one saved registration the active one.
+   * @param channelId - which channel.
+   * @param key - the registration's storage key (issued client id).
+   * @returns the refreshed channel state.
+   */
+  async selectAccount(channelId, key) {
+    const channel = CHANNEL_BY_ID.get(channelId)
+    if (channel === undefined) throw new Error(`unknown subscription channel "${String(channelId)}"`)
+    const account = await selectAccount(this.ctx, channel.id, String(key ?? ''))
+    if (account === undefined) throw new Error('that account has no usable tokens; sign in again')
+    this.registerRoute(channel)
+    this.announce(channel)
+    return this.state()
   }
 
   /** Stop every running attempt; called when the plugin unloads. */
@@ -895,6 +938,8 @@ export class SubscriptionService {
     this.routes.clear()
   }
 }
+
+
 
 
 

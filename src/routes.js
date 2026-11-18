@@ -49,8 +49,8 @@ export function registerRoutes(ctx, service) {
   register('/state', ['GET'], async () => json(await service.state()))
 
   register('/login', ['POST'], async (request) => {
-    const { channel } = await body(request)
-    return json(service.login(channel))
+    const input = await body(request)
+    return json(service.login(input.channel, { newAccount: input.newAccount === true }))
   })
 
   register('/attempt', ['GET'], async (request) => {
@@ -123,12 +123,18 @@ export function registerRoutes(ctx, service) {
     const verdict = await service.testModel(channel, String(input.model ?? ''), request.signal)
     return json(verdict)
   })
+  register('/account/select', ['POST'], async (request) => {
+    const input = await body(request)
+    return json(await service.selectAccount(input.channel, input.key))
+  })
+
   register('/logout', ['POST'], async (request) => {
     const { channel } = await body(request)
     await service.logout(channel)
     return json({ ok: true })
   })
 }
+
 
 
 
