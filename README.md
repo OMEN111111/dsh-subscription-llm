@@ -13,14 +13,14 @@
 ## 功能
 
 - **一个入口**：紧跟官方「添加模型提供商」之后，与「第三方模型提供商」「自定义模型 API」并列，不替换官方界面。
-- **三种渠道**：ChatGPT 订阅（Codex）、Claude 订阅（Pro / Max）、Google Antigravity。
+- **三种渠道**：ChatGPT 订阅（官方 Sign in with ChatGPT）、Claude 订阅（Pro / Max）、Google Antigravity。
 - **浏览器登录**：OAuth + PKCE；本机回环回调自动完成，回调端口被占用或无法回调时，可以在卡片里粘贴授权码 / 回调地址。
 - **凭据安全**：令牌只写入 DSH 凭据库（记录键 `dsh-subscription-channels/<渠道>`），不写入配置文件、不打印到日志、不返回给浏览器；面板只显示账号邮箱与到期时间。
 - **自动续期**：访问令牌快过期时用刷新令牌换取新令牌；上游返回 401 时撤销对应模型并清掉失效记录。
 - **模型目录**：每个渠道内可查看/删除/恢复模型，删除后不再出现在输入框的模型选择器；「获取可用模型」把账号侧可用模型重新并入目录。
 - **逐模型检测**：勾选模型即可发起一次最小真实请求，返回「可用 + 延迟」或失败原因（授权失效、额度用尽、限流、模型不可用、上游异常、超时、网络错误）。
 - **逐模型自定义**：上下文窗口、最大输出 token 数、推理等级、输入类型（文本/图片）都可单独覆盖，交互与 DSH 自带「自定义模型 API」面板一致。
-- **可覆盖参数**：OAuth 客户端参数、Cloud Code 主机、`originator`、无头环境等都可以在插件配置里改。
+- **可覆盖参数**：OAuth 客户端参数、Cloud Code 主机、无头环境等都可以在插件配置里改。
 
 ## 安装
 
@@ -75,7 +75,7 @@ dsh plugin --profile <你的 profile 名> add github:OMEN111111/dsh-subscription
 
 | 渠道 | DSH 提供商 id | 登录 | 上游接口 | 内置模型（v0.2.0） |
 | --- | --- | --- | --- | --- |
-| ChatGPT 订阅 | `chatgpt-sub` | OAuth（PKCE，回环 1455 / 粘贴） | ChatGPT 后端 Codex Responses | GPT-6.1 Sol、GPT-6 Sol、GPT-6 Astra、GPT-5.6 Sol、GPT-5.5、GPT-5.3 Codex Spark |
+| ChatGPT 订阅 | `chatgpt-sub` | 官方 Sign in with ChatGPT（动态注册 + PKCE，回环 127.0.0.1:1455 / 粘贴） | `https://api.openai.com/v1/responses`（`store:false` / `stream:true`） | 账号内 `/v1/models` 返回的模型；静态表仅作离线兜底 |
 | Claude 订阅 | `claude-sub` | OAuth（PKCE，回环 53692 / 粘贴 `code#state`） | Anthropic Messages | Claude Opus 5.5 / Sonnet 5.5 / Opus 5 / Sonnet 5 / Opus 4.8 / Sonnet 4.6 / Haiku 4.5 |
 | Google Antigravity | `google-antigravity` | Google OAuth（PKCE，回环 51121 / 粘贴） | Cloud Code Assist `v1internal:streamGenerateContent` | Gemini 4 Argon、Gemini 3.8 Flash（low/medium/high）、Gemini 3 Pro、Claude Opus/Sonnet 5.5、GPT-OSS 120B；账号登录后会尝试用 `fetchAvailableModels` 覆盖为账号真实可用的目录 |
 
@@ -90,10 +90,8 @@ dsh plugin --profile <你的 profile 名> add github:OMEN111111/dsh-subscription
   name: 'dsh-subscription-channels'
   config:
     lang: zh                       # 提供商显示名与提示语言：zh / en
-    chatgptFlow: siwc              # ChatGPT 登录流程：siwc（官方，默认）/ codex（旧流程，显式回退）
     siwcAgentName: DeepSeek Harness # 官方授权页展示的应用名
     openBrowser: true              # 无头环境设为 false，改为手动打开卡片里的链接
-    originator: codex_cli_rs       # 发给 ChatGPT 后端的 originator
     antigravityHost: https://daily-cloudcode-pa.googleapis.com
     googleClientId: <override>     # Google 轮换 OAuth 客户端时覆盖
     googleClientSecret: <必填>      # Antigravity 登录所需的 OAuth 客户端密钥，见下节
@@ -142,18 +140,19 @@ npm test        # 等价于 node --test test/wire.test.mjs test/service.test.mjs
 
 ## 已知限制与风险
 
-- 三个渠道使用的都是各订阅产品**自身客户端**所用的非公开接口（Codex Responses、Claude Code 的 OAuth 客户端、Antigravity 的 Cloud Code Assist）。这些接口可能随时调整，届时需要更新本插件或通过配置覆盖参数；这也是它们不符合各家公开发布规范的地方，请自行评估账号风险。
-- 上游要求携带对应客户端的标识头（`originator`、`user-agent: claude-cli/…`、Antigravity Hub UA），请求因此会声明为对应客户端。
+- ChatGPT 渠道使用官方文档化的 Sign in with ChatGPT 与公开 Responses 接口；Claude 与 Antigravity 渠道仍在调用各自客户端使用的非公开接口（Claude Code 的 OAuth 客户端、Antigravity 的 Cloud Code Assist）。后者可能随时调整，届时需要更新本插件或通过配置覆盖参数；这也是它们不符合各家公开发布规范的地方，请自行评估账号风险。
+- Claude 与 Antigravity 渠道要求携带对应客户端的标识头（`user-agent: claude-cli/…`、Antigravity Hub UA），请求因此会声明为对应客户端。
 - 图片输入仅在把某模型的**输入类型**勾选「图片」后转发（ChatGPT / Claude / Antigravity 各自使用官方的图片块）；文件附件仍不转发。
 - 令牌与账号信息保存在本机 DSH 凭据库中；插件不向任何第三方服务器上报数据，唯一的出站请求是各渠道自己的 OAuth / 模型接口。
 
 ## 版本
 
-- **v0.2.6**：真实账号回归（工具调用 + 第二轮历史、额度/断流错误映射、并发刷新）；chatgptFlow: codex 标记为弃用的显式回退，后续版本移除。
+- **v0.2.7**：移除旧 Codex 接入路径（遗留 grant 视为未登录）；设置页新增 ChatGPT 账号列表，可切换当前账号。
+- **v0.2.6**：真实账号回归（工具调用 + 第二轮历史、额度/断流错误映射、并发刷新）。
 - **v0.2.5**：ChatGPT 渠道行显示当前账号，并提供「添加账号」（走新注册，不覆盖已保存账号）；账号切换界面留待后续版本。
 - **v0.2.4**：同一注册的并发请求共享一次令牌刷新（单飞），避免轮换令牌互相作废；跨进程并发仍以最后写入为准。
 - **v0.2.3**：凭据记录改为「按签发 client_id 隔离的注册集合 + 当前账号」，旧单条记录自动升级；登出保留注册关系与主机 ID，其他账号不受影响。
-- **v0.2.2**：ChatGPT 渠道改用官方 **Sign in with ChatGPT**（动态注册、ID Token 验签、计划权限校验、/v1/responses 契约、刷新轮换与撤销）；模型目录改由 /v1/models 提供；保留 chatgptFlow: codex 显式回退。
+- **v0.2.2**：ChatGPT 渠道改用官方 **Sign in with ChatGPT**（动态注册、ID Token 验签、计划权限校验、/v1/responses 契约、刷新轮换与撤销）；模型目录改由 /v1/models 提供。
 - **v0.2.1**：渠道目录收进「编辑」；获取可用模型 改为弹窗选择；删除即时生效；推理档位按模型真实支持并支持自定义 API 参数值；修复 Windows 打开登录页时 URL 被 & 截断导致 missing_required_parameter / 缺少 client_id；去掉与退出登录重复的「重新登录」。
 - **v0.2.0**：新增模型目录（删除 / 恢复 / 排序 / 添加模型 / 获取可用模型）、逐模型检测与失败原因、逐模型自定义（上下文窗口、最大输出、推理等级、输入类型），并支持图片输入；界面与 DSH 自带模型编辑面板一致。
 - **v0.1.0**：首个版本。三个渠道的登录、模型注册、退出登录、错误处理与中英文文案。

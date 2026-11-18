@@ -1,42 +1,21 @@
 /**
- * ChatGPT subscription channel.
+ * ChatGPT subscription channel: OpenAI's documented "Sign in with ChatGPT" flow
+ * for open-source / locally hosted clients.
  *
- * Two ways to reach a ChatGPT account:
- *
- * - `siwc` (default): OpenAI's documented "Sign in with ChatGPT" flow for
- *   open-source / locally hosted clients. A first sign-in dynamically registers
- *   a client (`dynamic_agent_client`) for the account and workspace, returns the
- *   issued client id through the callback, and grants the Responses API scopes
- *   that let eligible plan usage pay for inference at `https://api.openai.com/v1`.
- * - `codex` (fallback): the Codex CLI client id and the ChatGPT backend route
- *   this plugin shipped before, kept for accounts and deployments that still
- *   rely on it. Selected with `config.chatgptFlow: 'codex'`.
- *
- * The stored grant records which flow issued it, so requests keep using the
- * route that issued their token even after the default changes.
+ * A first sign-in dynamically registers a client (`dynamic_agent_client`) for
+ * the account and workspace, returns the issued client id through the callback,
+ * and grants the Responses API scopes that let eligible ChatGPT plan usage pay
+ * for inference at `https://api.openai.com/v1`. Later sign-ins reuse that issued
+ * client id; the Codex fallback this plugin shipped earlier is gone.
  */
 import { createPkce, randomState, expiresAt, startLoopback, openBrowser, postForm, sseJson } from '../oauth.js'
-import { waitForParams, decodeJwt } from '../login.js'
+import { waitForParams } from '../login.js'
 import { message } from '../copy.js'
 import { verifyIdToken, revokeSession } from '../oidc.js'
 import { blockText, conversation, instructionText, declaredTools, toolArguments } from '../convert.js'
 
-/** Flow ids stored on a grant. */
+/** The only grant format this channel accepts. */
 const FLOW_SIWC = 'siwc'
-const FLOW_CODEX = 'codex'
-
-/** The Codex CLI route this plugin used before Sign in with ChatGPT existed. */
-const CODEX = {
-  clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
-  authorizeUrl: 'https://auth.openai.com/oauth/authorize',
-  tokenUrl: 'https://auth.openai.com/oauth/token',
-  redirectUri: 'http://localhost:1455/auth/callback',
-  callbackPort: 1455,
-  callbackPath: '/auth/callback',
-  scope: 'openid profile email offline_access',
-  apiBase: 'https://chatgpt.com/backend-api',
-  responsesPath: '/codex/responses',
-}
 
 /** OpenAI's documented Sign in with ChatGPT contract for open-source clients. */
 const SIWC = {
@@ -88,15 +67,6 @@ const MODEL_LEVELS = {
 const REASONING = {
   efforts: [LEVELS.low, LEVELS.medium, LEVELS.high],
   defaultEffort: 'medium',
-}
-
-/**
- * The flow a new sign-in uses.
- * @param config - plugin config.
- * @returns `siwc` unless the profile explicitly asks for the Codex route.
- */
-function flowOf(config) {
-  return config.chatgptFlow === 'codex' ? FLOW_CODEX : FLOW_SIWC
 }
 
 /**
@@ -207,79 +177,6 @@ async function loginSiwc(request) {
 }
 
 /**
- * Run the legacy Codex sign-in.
- * @param request - interaction, cancellation, and config.
- * @returns the grant to store.
- */
-async function loginCodex(request) {
-  const { interaction, signal, config } = request
-  const pkce = createPkce()
-  const state = randomState()
-  const authorize = new URL(CODEX.authorizeUrl)
-  authorize.search = new URLSearchParams({
-    response_type: 'code',
-    client_id: CODEX.clientId,
-    redirect_uri: CODEX.redirectUri,
-    scope: CODEX.scope,
-    code_challenge: pkce.challenge,
-    code_challenge_method: 'S256',
-    state,
-    id_token_add_organizations: 'true',
-    codex_cli_simplified_flow: 'true',
-    originator: config.originator,
-  }).toString()
-  let loopback
-  try {
-    loopback = await startLoopback({ port: CODEX.callbackPort, path: CODEX.callbackPath, timeoutMs: config.loginTimeoutMs })
-  } catch (error) {
-    interaction.notify({ message: message(config.lang, 'loopbackBusy', { PORT: CODEX.callbackPort, ERROR: String(error?.message ?? error) }) })
-  }
-  interaction.notify({ message: message(config.lang, 'openChatgpt'), url: authorize.href })
-  if (config.openBrowser !== false) openBrowser(authorize.href)
-  const code = await (async () => {
-    const result = await waitForParams({
-      interaction,
-      loopback,
-      signal,
-      state,
-      lang: config.lang,
-      message: message(config.lang, 'pastePrompt'),
-      placeholder: `${CODEX.redirectUri}?code=…&state=…`,
-    })
-    return result.code
-  })()
-  if (loopback !== undefined) loopback.close()
-  const token = await postForm(CODEX.tokenUrl, {
-    grant_type: 'authorization_code',
-    client_id: CODEX.clientId,
-    code,
-    code_verifier: pkce.verifier,
-    redirect_uri: CODEX.redirectUri,
-  }, { signal })
-  if (typeof token.access_token !== 'string' || token.access_token.length === 0) {
-    throw new Error('ChatGPT returned no access token')
-  }
-  if (typeof token.refresh_token !== 'string' || token.refresh_token.length === 0) {
-    throw new Error('ChatGPT returned no refresh token; sign in again and keep the browser open until it reports success')
-  }
-  if (typeof token.expires_in !== 'number') throw new Error('ChatGPT returned no token lifetime')
-  const claims = decodeJwt(token.id_token) ?? decodeJwt(token.access_token)
-  const accountId = claims?.['https://api.openai.com/auth']?.chatgpt_account_id
-  if (typeof accountId !== 'string' || accountId.length === 0) {
-    throw new Error('The ChatGPT token carries no account id')
-  }
-  return {
-    flow: FLOW_CODEX,
-    accessToken: token.access_token,
-    refreshToken: token.refresh_token,
-    expiresAt: expiresAt(token.expires_in),
-    accountId,
-    account: typeof claims?.email === 'string' ? claims.email : undefined,
-    scope: typeof token.scope === 'string' ? token.scope : CODEX.scope,
-  }
-}
-
-/**
  * Project harness messages onto Responses `input` items.
  * @param options - harness request.
  * @param images - resolved image bytes keyed by attachment id.
@@ -386,61 +283,13 @@ function buildSiwcRequest(options, credential, context) {
   }
 }
 
-/**
- * Build the legacy Codex Responses request.
- * @param options - harness request.
- * @param credential - stored grant.
- * @param context - service context (config, images, effort wire value).
- * @returns URL, headers, and JSON body.
- */
-function buildCodexRequest(options, credential, context) {
-  const headers = {
-    authorization: `Bearer ${credential.accessToken}`,
-    'chatgpt-account-id': credential.accountId ?? '',
-    originator: context.config.originator,
-    'openai-beta': 'responses=experimental',
-    accept: 'text/event-stream',
-    'content-type': 'application/json',
-    'user-agent': USER_AGENT,
-  }
-  if (typeof options.sessionId === 'string' && options.sessionId.length > 0) {
-    const clamped = options.sessionId.slice(0, 64)
-    headers['session-id'] = clamped
-    headers['x-client-request-id'] = clamped
-  }
-  const effort = context.wireEffort ?? options.reasoningEffort
-  const body = {
-    model: options.model,
-    store: false,
-    stream: true,
-    instructions: instructionText(options) || 'You are a helpful assistant.',
-    input: responsesInput(options, context.images),
-    text: { verbosity: 'low' },
-    include: ['reasoning.encrypted_content'],
-    tool_choice: 'auto',
-    parallel_tool_calls: true,
-    ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
-    ...(effort === undefined ? {} : { reasoning: { effort, summary: 'auto' } }),
-    ...(options.sessionId === undefined ? {} : { prompt_cache_key: String(options.sessionId).slice(0, 64) }),
-  }
-  const tools = declaredTools(options)
-  if (tools.length > 0) {
-    body.tools = tools.map(tool => ({
-      type: 'function',
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-      strict: false,
-    }))
-  }
-  return { url: CODEX.apiBase + CODEX.responsesPath, headers, body }
-}
-
 export default {
   id: 'chatgpt',
   route: 'chatgpt-sub',
   name: { zh: 'ChatGPT 订阅', en: 'ChatGPT subscription' },
   models: MODELS,
+  /** Grants this channel can use; anything else is treated as signed out. */
+  requiresFlow: FLOW_SIWC,
 
   /** Reasoning levels any model on this channel may declare. */
   reasoningEfforts: REASONING.efforts,
@@ -466,79 +315,54 @@ export default {
   },
 
   /**
-   * Run the sign-in flow configured for this profile.
+   * Run the Sign in with ChatGPT flow.
    * @param request - interaction, cancellation, config, and the previous grant.
    * @returns the grant to store.
    */
   async login(request) {
-    return flowOf(request.config) === FLOW_CODEX ? loginCodex(request) : loginSiwc(request)
+    return loginSiwc(request)
   },
 
   /**
-   * Rotate the stored grant on the route that issued it.
+   * Rotate the stored grant.
    * @param payload - stored grant.
-   * @param config - plugin config.
    * @returns the rotated grant.
    */
-  async refresh(payload, config) {
-    if (payload.flow === FLOW_SIWC) {
-      const token = await postForm(SIWC.tokenUrl, {
-        grant_type: 'refresh_token',
-        client_id: payload.clientId,
-        refresh_token: payload.refreshToken,
-        resource: SIWC.resource,
-      })
-      if (typeof token.access_token !== 'string' || token.access_token.length === 0) {
-        throw new Error('ChatGPT returned no refreshed access token')
-      }
-      return {
-        ...payload,
-        accessToken: token.access_token,
-        refreshToken: typeof token.refresh_token === 'string' ? token.refresh_token : payload.refreshToken,
-        idToken: typeof token.id_token === 'string' ? token.id_token : payload.idToken,
-        expiresAt: expiresAt(typeof token.expires_in === 'number' ? token.expires_in : 3600),
-        scope: typeof token.scope === 'string' ? token.scope : payload.scope,
-      }
-    }
-    const token = await postForm(CODEX.tokenUrl, {
+  async refresh(payload) {
+    const token = await postForm(SIWC.tokenUrl, {
       grant_type: 'refresh_token',
+      client_id: payload.clientId,
       refresh_token: payload.refreshToken,
-      client_id: CODEX.clientId,
+      resource: SIWC.resource,
     })
     if (typeof token.access_token !== 'string' || token.access_token.length === 0) {
       throw new Error('ChatGPT returned no refreshed access token')
     }
-    const claims = decodeJwt(token.id_token) ?? decodeJwt(token.access_token)
-    const accountId = claims?.['https://api.openai.com/auth']?.chatgpt_account_id
     return {
       ...payload,
       accessToken: token.access_token,
       refreshToken: typeof token.refresh_token === 'string' ? token.refresh_token : payload.refreshToken,
+      idToken: typeof token.id_token === 'string' ? token.id_token : payload.idToken,
       expiresAt: expiresAt(typeof token.expires_in === 'number' ? token.expires_in : 3600),
-      accountId: typeof accountId === 'string' && accountId.length > 0 ? accountId : payload.accountId,
-      account: typeof claims?.email === 'string' ? claims.email : payload.account,
+      scope: typeof token.scope === 'string' ? token.scope : payload.scope,
     }
   },
 
   /**
-   * End the renewable session at the issuer when this grant came from the
-   * official flow. The Codex route has no documented revocation endpoint.
+   * End the renewable session at the issuer.
    * @param payload - stored grant.
    * @returns whether revocation was confirmed.
    */
   async revoke(payload) {
-    if (payload.flow !== FLOW_SIWC) return { ok: true, skipped: true }
     return revokeSession({ clientId: payload.clientId, refreshToken: payload.refreshToken })
   },
 
   /**
-   * Ask the account which models it may use. Only the official flow documents a
-   * model listing; the Codex fallback keeps its static catalog.
+   * Ask the account which models it may use.
    * @param credential - stored grant.
-   * @returns discovered models, or an empty list when the route has none.
+   * @returns discovered models, or an empty list when the route cannot answer.
    */
   async discoverModels(credential) {
-    if (credential.flow !== FLOW_SIWC) return []
     const response = await fetch(SIWC.apiBase + SIWC.modelsPath, {
       headers: { authorization: `Bearer ${credential.accessToken}`, accept: 'application/json' },
     })
@@ -566,16 +390,14 @@ export default {
   },
 
   /**
-   * Build the request for the route that issued this grant.
+   * Build the Responses request for this grant.
    * @param options - harness request.
    * @param credential - stored grant.
    * @param context - service context.
    * @returns URL, headers, and JSON body.
    */
   buildRequest(options, credential, context) {
-    return credential.flow === FLOW_SIWC
-      ? buildSiwcRequest(options, credential, context)
-      : buildCodexRequest(options, credential, context)
+    return buildSiwcRequest(options, credential, context)
   },
 
   /** Translate the Responses event stream into harness chunks. */
@@ -719,7 +541,7 @@ export default {
         yield { type: 'block-end', index: block.index, block: { type: 'text', text: block.text } }
       }
     }
-    if (terminal === undefined) throw new Error('the Codex stream ended without a terminal response event')
+    if (terminal === undefined) throw new Error('the ChatGPT stream ended without a terminal response event')
     if (terminal.error !== undefined && terminal.status === 'failed') {
       const error = terminal.error ?? {}
       throw new Error(`${String(error.code ?? 'response_failed')}: ${String(error.message ?? 'the provider failed the response')}`)

@@ -10,8 +10,10 @@ export function normalizeConfig(raw) {
   return {
     /** Display language for provider names: `zh` (default) or `en`. */
     lang: config.lang === 'en' ? 'en' : 'zh',
-    /** The `originator` the ChatGPT backend sees; the Codex CLI's own value by default. */
-    originator: typeof config.originator === 'string' && config.originator.length > 0 ? config.originator : 'codex_cli_rs',
+    /** The app name the official Sign in with ChatGPT consent screen shows. */
+    siwcAgentName: typeof config.siwcAgentName === 'string' && config.siwcAgentName.length > 0 ? config.siwcAgentName : 'DeepSeek Harness',
+    /** This installation's stable Sign in with ChatGPT host id; filled from the catalog document. */
+    hostId: typeof config.hostId === 'string' ? config.hostId : undefined,
     /** Overrides for the Antigravity OAuth client, when Google rotates it. */
     googleClientId: typeof config.googleClientId === 'string' ? config.googleClientId : undefined,
     googleClientSecret: typeof config.googleClientSecret === 'string' ? config.googleClientSecret : undefined,

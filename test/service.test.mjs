@@ -109,6 +109,8 @@ function fakeChannel() {
       const code = await interaction.prompt({ kind: 'text', message: 'Paste the callback URL.', placeholder: 'url' })
       if (code !== 'abc') throw new Error('unexpected answer')
       return {
+        flow: 'siwc',
+        clientId: 'oaiapp_fake',
         accessToken: 'tok',
         refreshToken: 'ref',
         expiresAt: Date.now() + 3_600_000,
@@ -161,8 +163,8 @@ test('a completed sign-in stores the grant and publishes the route', async () =>
   const stored = host.records.get(recordKey('chatgpt'))
   assert.equal(stored.kind, 'grant')
   assert.equal(stored.payload.version, 1)
-  assert.equal(stored.payload.selected, 'default')
-  assert.equal(stored.payload.accounts[0].accountId, 'acct-123')
+  assert.equal(stored.payload.selected, 'oaiapp_fake')
+  assert.equal(stored.payload.accounts[0].clientId, 'oaiapp_fake')
   assert.ok(host.adapters.has('chatgpt-sub'))
 
   // The route serves the real ChatGPT catalog; the fake channel only replaced the sign-in.
@@ -224,7 +226,7 @@ test('an expiring grant rotates through the channel refresh before use', async (
   const host = makeHost()
   host.records.set(recordKey('chatgpt'), {
     kind: 'grant',
-    payload: {
+    payload: { flow: 'siwc', clientId: 'oaiapp_test',
       version: 1,
       accessToken: 'stale',
       refreshToken: 'refresh-token',
@@ -248,11 +250,12 @@ test('an expiring grant rotates through the channel refresh before use', async (
   try {
     const credential = await service.credential(CHANNEL_BY_ID.get('chatgpt'), undefined)
     assert.equal(credential.accessToken, 'fresh')
-    assert.equal(seen[0].url, 'https://auth.openai.com/oauth/token')
+    assert.equal(seen[0].url, 'https://auth.openai.com/api/accounts/oauth/token')
     assert.match(seen[0].body, /grant_type=refresh_token/u)
+    assert.match(seen[0].body, /resource=https%3A%2F%2Fapi\.openai\.com%2Fv1/u)
     const stored = host.records.get(recordKey('chatgpt')).payload.accounts[0]
     assert.equal(stored.accessToken, 'fresh')
-    assert.equal(stored.accountId, 'acct-1')
+    assert.equal(stored.clientId, 'oaiapp_test')
   } finally {
     globalThis.fetch = originalFetch
     service.dispose()
@@ -263,7 +266,7 @@ test('the adapter streams a mocked provider response and classifies failures', a
   const host = makeHost()
   host.records.set(recordKey('chatgpt'), {
     kind: 'grant',
-    payload: { version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
+    payload: { flow: 'siwc', clientId: 'oaiapp_test', version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
   })
   const service = new SubscriptionService(host.ctx, config)
   service.start()
@@ -319,7 +322,7 @@ test('state derives expiry from the stored grant', async () => {
   const host = makeHost()
   host.records.set(recordKey('chatgpt'), {
     kind: 'grant',
-    payload: { version: 1, accessToken: 'a', refreshToken: '', expiresAt: Date.now() - 1000 },
+    payload: { flow: 'siwc', clientId: 'oaiapp_test', version: 1, accessToken: 'a', refreshToken: '', expiresAt: Date.now() - 1000 },
   })
   host.records.set(recordKey('claude'), {
     kind: 'grant',
@@ -415,7 +418,7 @@ test('a probe reports success, auth failure, and quota with reasons', async () =
   const host = makeHost()
   host.records.set(recordKey('chatgpt'), {
     kind: 'grant',
-    payload: { version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
+    payload: { flow: 'siwc', clientId: 'oaiapp_test', version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
   })
   const service = new SubscriptionService(host.ctx, config)
   const channel = CHANNEL_BY_ID.get('chatgpt')
@@ -568,7 +571,7 @@ test('a legacy single grant is read as one default registration', async () => {
   const host = makeHost()
   host.records.set(recordKey('chatgpt'), {
     kind: 'grant',
-    payload: { version: 1, accessToken: 'legacy', refreshToken: 'r', expiresAt: Date.now() + 3_600_000, account: 'old@example.com' },
+    payload: { flow: 'siwc', clientId: 'oaiapp_test', version: 1, accessToken: 'legacy', refreshToken: 'r', expiresAt: Date.now() + 3_600_000, account: 'old@example.com' },
   })
   const set = await readSet(host.ctx, 'chatgpt')
   assert.equal(set.accounts.length, 1)
@@ -643,7 +646,7 @@ test('an in-stream provider failure becomes a finish error', async () => {
   const host = makeHost()
   host.records.set(recordKey('chatgpt'), {
     kind: 'grant',
-    payload: { version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
+    payload: { flow: 'siwc', clientId: 'oaiapp_test', version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
   })
   const service = new SubscriptionService(host.ctx, config)
   service.start()
@@ -669,7 +672,7 @@ test('a quota 429 maps to the QUOTA failure code', async () => {
   const host = makeHost()
   host.records.set(recordKey('chatgpt'), {
     kind: 'grant',
-    payload: { version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
+    payload: { flow: 'siwc', clientId: 'oaiapp_test', version: 1, accessToken: 'tok', refreshToken: 'ref', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
   })
   const service = new SubscriptionService(host.ctx, config)
   service.start()
@@ -685,4 +688,21 @@ test('a quota 429 maps to the QUOTA failure code', async () => {
     globalThis.fetch = originalFetch
     service.dispose()
   }
+})
+
+
+
+test('a legacy ChatGPT grant is treated as signed out', async () => {
+  const host = makeHost()
+  host.records.set(recordKey('chatgpt'), {
+    kind: 'grant',
+    payload: { version: 1, accessToken: 'legacy', refreshToken: 'r', expiresAt: Date.now() + 3_600_000, accountId: 'acct' },
+  })
+  const service = new SubscriptionService(host.ctx, config)
+  service.start()
+  const state = await service.state()
+  assert.equal(state.channels.find(entry => entry.id === 'chatgpt').linked, false)
+  assert.deepEqual(state.channels.find(entry => entry.id === 'chatgpt').accounts, [])
+  assert.equal(await service.credential(CHANNEL_BY_ID.get('chatgpt'), undefined), undefined)
+  service.dispose()
 })

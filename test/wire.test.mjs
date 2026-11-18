@@ -139,8 +139,8 @@ test('antigravity: MAX_TOKENS becomes a max-tokens finish', async () => {
   assert.deepEqual(chunks.at(-1).reason, { kind: 'max-tokens' })
 })
 
-const credential = { accessToken: 'token', accountId: 'acct', refreshToken: 'refresh', project: 'proj' }
-const config = { originator: 'codex_cli_rs' }
+const credential = { flow: 'siwc', clientId: 'oaiapp_test', accessToken: 'token', refreshToken: 'refresh', expiresAt: Date.now() + 3_600_000, project: 'proj' }
+const config = { siwcAgentName: 'DeepSeek Harness' }
 
 test('chatgpt: request body carries instructions, tools and history items', () => {
   const options = {
@@ -164,9 +164,9 @@ test('chatgpt: request body carries instructions, tools and history items', () =
     sessionId: 'session-1',
   }
   const request = chatgpt.buildRequest(options, credential, { config })
-  assert.equal(request.url, 'https://chatgpt.com/backend-api/codex/responses')
-  assert.equal(request.headers['chatgpt-account-id'], 'acct')
-  assert.equal(request.headers['session-id'], 'session-1')
+  assert.equal(request.url, 'https://api.openai.com/v1/responses')
+  assert.equal(request.headers['chatgpt-account-id'], undefined)
+  assert.equal(request.headers['session-id'], undefined)
   assert.equal(request.body.instructions, 'You are strict.\n\nsystem snapshot')
   assert.deepEqual(request.body.tools.map(tool => tool.name), ['bash'])
   assert.deepEqual(request.body.reasoning, { effort: 'high', summary: 'auto' })
@@ -346,19 +346,6 @@ test('siwc: requests go to the public Responses API with the documented body', (
   assert.deepEqual(request.body.tools.map(tool => tool.type), ['function'])
 })
 
-test('codex: a legacy grant keeps the ChatGPT backend route', () => {
-  const legacy = { flow: 'codex', accessToken: 'codex-token', accountId: 'acct', refreshToken: 'r', expiresAt: Date.now() + 3_600_000 }
-  const request = chatgpt.buildRequest(
-    { provider: 'chatgpt-sub', model: 'gpt-5.5', messages: [], sessionId: 'session-1' },
-    legacy,
-    { config, wireEffort: 'high', images: new Map() },
-  )
-  assert.equal(request.url, 'https://chatgpt.com/backend-api/codex/responses')
-  assert.equal(request.headers['chatgpt-account-id'], 'acct')
-  assert.equal(request.headers['session-id'], 'session-1')
-  assert.equal(request.body.store, false)
-  assert.deepEqual(request.body.text, { verbosity: 'low' })
-})
 
 test('siwc: refresh sends the issued client id and resource', async () => {
   const originalFetch = globalThis.fetch
@@ -407,4 +394,7 @@ test('siwc: the model listing maps slugs and drops hidden entries', async () => 
     globalThis.fetch = originalFetch
   }
 })
+
+
+
 

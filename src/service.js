@@ -532,7 +532,7 @@ export class SubscriptionService {
         label: this.label(channel),
         methods: [{ id: 'oauth', label: this.config.lang === 'en' ? 'Browser sign-in' : '浏览器登录' }],
         run: async (session) => {
-          const previous = this.forceNewAccount.has(channel.id) ? undefined : await readLink(this.ctx, channel.id)
+          const previous = this.forceNewAccount.has(channel.id) ? undefined : await this.usableLink(channel)
           const payload = await channel.login({
             interaction: {
               notify: notice => { session.notify(notice) },
@@ -572,8 +572,24 @@ export class SubscriptionService {
    * @param signal - request cancellation.
    * @returns the grant, or undefined when the channel is not signed in.
    */
-  async credential(channel, signal) {
+  /**
+   * Read the grant this channel can actually use.
+   *
+   * A grant written by a removed flow (the retired Codex route, or a foreign
+   * record) is reported as signed out, so the Models page asks for a sign-in
+   * instead of sending a request that cannot succeed.
+   * @param channel - channel module.
+   * @returns the usable grant, or undefined.
+   */
+  async usableLink(channel) {
     const link = await readLink(this.ctx, channel.id)
+    if (link === undefined) return undefined
+    if (channel.requiresFlow !== undefined && link.flow !== channel.requiresFlow) return undefined
+    return link
+  }
+
+  async credential(channel, signal) {
+    const link = await this.usableLink(channel)
     if (link === undefined) return undefined
     if (isFresh(link)) return link
     if (typeof link.refreshToken !== 'string' || link.refreshToken.length === 0) return link
@@ -583,7 +599,7 @@ export class SubscriptionService {
       pending = (async () => {
         try {
           // Another process may have rotated the grant while this one waited.
-          const current = await readLink(this.ctx, channel.id)
+          const current = await this.usableLink(channel)
           const base = current !== undefined && accountKey(current) === accountKey(link) ? current : link
           if (isFresh(base)) return base
           const next = await channel.refresh(base, this.config)
@@ -682,7 +698,7 @@ export class SubscriptionService {
     }
     this.syncing = (async () => {
       for (const channel of CHANNELS) {
-        const link = await readLink(this.ctx, channel.id)
+        const link = await this.usableLink(channel)
         if (link === undefined) await this.dropRoute(channel)
         else this.registerRoute(channel)
       }
@@ -706,7 +722,7 @@ export class SubscriptionService {
     const channels = []
     for (const channel of CHANNELS) {
       const set = await readSet(this.ctx, channel.id)
-      const link = await readLink(this.ctx, channel.id)
+      const link = await this.usableLink(channel)
       channels.push({
         id: channel.id,
         route: channel.route,
@@ -720,7 +736,7 @@ export class SubscriptionService {
             ? 'linked'
             : typeof link.refreshToken === 'string' && link.refreshToken.length > 0 ? 'expiring' : 'expired',
         account: typeof link?.account === 'string' ? link.account : undefined,
-        accounts: set.accounts.map(account => ({
+        accounts: set.accounts.filter(account => channel.requiresFlow === undefined || account.flow === channel.requiresFlow).map(account => ({
           key: accountKey(account),
           email: typeof account.account === 'string' ? account.account : undefined,
           subject: typeof account.subject === 'string' ? account.subject : undefined,
@@ -840,7 +856,7 @@ export class SubscriptionService {
    */
   async authorize(channel, interaction, signal, options = {}) {
     const authorization = this.ctx.get('authorization')
-    const previous = options.newAccount === true ? undefined : await readLink(this.ctx, channel.id)
+    const previous = options.newAccount === true ? undefined : await this.usableLink(channel)
     if (authorization === undefined) {
       return channel.login({
         interaction,
@@ -963,6 +979,10 @@ export class SubscriptionService {
     this.routes.clear()
   }
 }
+
+
+
+
 
 
 
