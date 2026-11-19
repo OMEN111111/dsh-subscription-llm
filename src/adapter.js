@@ -13,7 +13,7 @@
 const INVALID_CREDENTIAL = 'INVALID_CREDENTIAL'
 const RATE_LIMIT = 'RATE_LIMIT'
 const QUOTA = 'QUOTA'
-const PROVIDER_ERROR = 'PROVIDER_ERROR'
+const SERVER = 'SERVER'
 const STREAM_CLOSED = 'STREAM_CLOSED'
 
 /**
@@ -29,8 +29,8 @@ export function providerFailure(status, body) {
     const quota = /quota|exceeded|limit reached|credits/iu.test(message)
     return { message, code: quota ? QUOTA : RATE_LIMIT, status }
   }
-  if (status === 503) return { message, code: PROVIDER_ERROR, status, retryable: true }
-  return { message, code: PROVIDER_ERROR, status }
+  if (status === 503) return { message, code: SERVER, status, retryable: true }
+  return { message, code: SERVER, status }
 }
 
 /**
@@ -55,7 +55,7 @@ function classifyStreamCode(code) {
   if (/rate.?limit/iu.test(text)) return RATE_LIMIT
   if (/quota|usage_limit|credits|exceeded/iu.test(text)) return QUOTA
   if (/invalid.*credential|unauthor|forbidden/iu.test(text)) return INVALID_CREDENTIAL
-  return PROVIDER_ERROR
+  return SERVER
 }
 
 /**
@@ -160,7 +160,7 @@ export class SubscriptionAdapter {
   async *stream(options) {
     const instance = this.instance(options.provider)
     if (instance === undefined) {
-      yield { type: 'finish', reason: { kind: 'error', failure: { message: `unknown subscription route ${options.provider}`, code: PROVIDER_ERROR } } }
+      yield { type: 'finish', reason: { kind: 'error', failure: { message: `unknown subscription route ${options.provider}`, code: 'NO_ADAPTER' } } }
       return
     }
     const channel = instance.channel
@@ -199,7 +199,7 @@ export class SubscriptionAdapter {
         yield { type: 'finish', reason: { kind: 'aborted', failure: { message: 'aborted', code: 'ABORTED' } } }
         return
       }
-      yield { type: 'finish', reason: { kind: 'error', failure: { message: String(error?.message ?? error), code: PROVIDER_ERROR } } }
+      yield { type: 'finish', reason: { kind: 'error', failure: { message: String(error?.message ?? error), code: SERVER } } }
       return
     }
     if (!response.ok) {
@@ -268,11 +268,11 @@ export class SubscriptionAdapter {
       }
       if (isNetworkError(error)) {
         diagnostic('network')
-        yield { type: 'finish', reason: { kind: 'error', failure: { message: `network: ${String(error?.message ?? error)}`, code: 'NETWORK' } } }
+        yield { type: 'finish', reason: { kind: 'error', failure: { message: `network: ${String(error?.message ?? error)}`, code: 'TRANSPORT' } } }
         return
       }
       diagnostic('error')
-      yield { type: 'finish', reason: { kind: 'error', failure: { message: String(error?.message ?? error), code: PROVIDER_ERROR } } }
+      yield { type: 'finish', reason: { kind: 'error', failure: { message: String(error?.message ?? error), code: SERVER } } }
       return
     }
     if (!finished) {

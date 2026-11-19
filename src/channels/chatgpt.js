@@ -637,7 +637,7 @@ export default {
         yield { type: 'finish', reason: { kind: 'max-tokens' } }
         return
       }
-      yield { type: 'finish', reason: { kind: 'error', failure: { message: `the response was incomplete: ${String(terminal.incomplete ?? 'unknown reason')}`, code: 'PROVIDER_ERROR' } } }
+      yield { type: 'finish', reason: { kind: 'error', failure: { message: `the response was incomplete: ${String(terminal.incomplete ?? 'unknown reason')}`, code: 'SERVER' } } }
       return
     }
     yield { type: 'finish', reason: { kind: hasTools ? 'tool-calls' : 'stop' } }

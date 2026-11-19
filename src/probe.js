@@ -65,7 +65,7 @@ export async function probeModel(request) {
         ok: false,
         status: response.status,
         latencyMs,
-        code: 'PROVIDER_ERROR',
+        code: 'SERVER',
         detail: failure,
         reason: message(lang, 'testRejected'),
       }
@@ -78,7 +78,7 @@ export async function probeModel(request) {
     return {
       ok: false,
       latencyMs,
-      code: 'NETWORK',
+      code: 'TRANSPORT',
       detail: String(error?.message ?? error),
       reason: message(lang, 'testNetwork'),
     }

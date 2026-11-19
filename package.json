@@ -1,6 +1,6 @@
 {
   "name": "dsh-subscription-channels",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "type": "module",
   "description": "Sign in to existing ChatGPT, Google Antigravity and Claude subscription accounts and use their models in DeepSeek Harness.",
@@ -52,5 +52,8 @@
       "platform": "web",
       "immediately": true
     }
+  },
+  "engines": {
+    "dsh": ">=0.2.2-rc.5 <0.3.0"
   }
 }

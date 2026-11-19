@@ -331,7 +331,7 @@ test('a route with no stored grant reports a sign-in failure instead of calling 
   for await (const chunk of service.adapter.stream({ provider: 'claude-sub', model: 'claude-sonnet-5-5', messages: [] })) chunks.push(chunk)
   assert.equal(chunks.length, 1)
   assert.equal(chunks[0].reason.kind, 'error')
-  assert.equal(chunks[0].reason.failure.code, 'PROVIDER_ERROR')
+  assert.equal(chunks[0].reason.failure.code, 'NO_ADAPTER')
   service.dispose()
 })
 

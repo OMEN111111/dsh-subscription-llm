@@ -75,7 +75,7 @@ test('a reset before response.completed is reported as a network failure', async
     const finish = chunks.at(-1)
     assert.equal(finish.type, 'finish')
     assert.equal(finish.reason.kind, 'error')
-    assert.equal(finish.reason.failure.code, 'NETWORK')
+    assert.equal(finish.reason.failure.code, 'TRANSPORT')
     assert.match(finish.reason.failure.message, /terminated/u)
     assert.equal(chunks.filter(chunk => chunk.type === 'finish').length, 1)
   } finally {
@@ -94,7 +94,7 @@ test('nested error events keep code, message, and request id', async () => {
     const chunks = await collect(adapter)
     const finish = chunks.at(-1)
     assert.equal(finish.reason.kind, 'error')
-    assert.equal(finish.reason.failure.code, 'PROVIDER_ERROR')
+    assert.equal(finish.reason.failure.code, 'SERVER')
     assert.match(finish.reason.failure.message, /server_error/u)
     assert.match(finish.reason.failure.message, /boom/u)
     assert.match(finish.reason.failure.message, /req_test_1/u)

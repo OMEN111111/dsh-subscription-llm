@@ -354,7 +354,7 @@ export default {
       return
     }
     if (finish === 'SAFETY' || finish === 'RECITATION' || finish === 'PROHIBITED_CONTENT' || finish === 'BLOCKLIST') {
-      yield { type: 'finish', reason: { kind: 'error', failure: { message: `the provider stopped the response: ${finish}`, code: 'PROVIDER_ERROR' } } }
+      yield { type: 'finish', reason: { kind: 'error', failure: { message: `the provider stopped the response: ${finish}`, code: 'SERVER' } } }
       return
     }
     const hasTools = nextIndex > (text === undefined ? 0 : 1) + (reasoning === undefined ? 0 : 1)
